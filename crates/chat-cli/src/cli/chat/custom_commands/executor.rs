@@ -14,7 +14,7 @@ use tokio::time::timeout;
 
 use crate::cli::chat::custom_commands::{
     CustomCommand,
-    parser::PromptProcessor,
+    parser::{PromptProcessor, SecurityValidationConfig},
     error::CustomCommandError,
 };
 use crate::os::Os;
@@ -65,17 +65,30 @@ impl CustomCommandExecutor {
         self
     }
     
-    /// カスタムコマンドを実行
+    /// カスタムコマンドを実行（デフォルト設定）
     pub async fn execute(
         &self,
         command: &CustomCommand,
         args: &[String],
         os: &Os,
     ) -> Result<String, CustomCommandError> {
-        tracing::info!("Executing custom command: {}", command.name);
+        // デフォルト設定でセキュリティ検証付き実行を呼び出す
+        let default_config = SecurityValidationConfig::default();
+        self.execute_with_security(command, args, os, &default_config).await
+    }
+    
+    /// セキュリティ設定付きでカスタムコマンドを実行
+    pub async fn execute_with_security(
+        &self,
+        command: &CustomCommand,
+        args: &[String],
+        os: &Os,
+        security_config: &SecurityValidationConfig,
+    ) -> Result<String, CustomCommandError> {
+        tracing::info!("Executing custom command: {} with security level: {:?}", command.name, security_config.level);
         
-        // 1. セキュリティチェック
-        self.security_check(command)?;
+        // 1. セキュリティチェック（設定付き）
+        self.security_check_with_config(command, security_config)?;
         
         // 2. 引数置換
         let mut processed_content = PromptProcessor::substitute_arguments(&command.content, args);
@@ -113,6 +126,11 @@ impl CustomCommandExecutor {
             },
         }
         Ok(())
+    }
+    
+    /// セキュリティ設定に基づくコマンドのセキュリティチェック
+    fn security_check_with_config(&self, command: &CustomCommand, config: &SecurityValidationConfig) -> Result<(), CustomCommandError> {
+        PromptProcessor::validate_content_with_config(&command.content, config)
     }
     
     /// Bashコマンドを実行

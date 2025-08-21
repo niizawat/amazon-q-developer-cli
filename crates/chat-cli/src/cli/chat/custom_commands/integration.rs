@@ -11,6 +11,7 @@ use crate::cli::chat::custom_commands::{
     CommandScope,
     loader::CustomCommandLoader,
     executor::{CustomCommandExecutor, SecurityMode},
+    parser::SecurityConfigManager,
 };
 use crate::cli::chat::{ChatError, ChatSession, ChatState};
 use crate::os::Os;
@@ -19,6 +20,7 @@ use crate::os::Os;
 pub struct CustomCommandIntegration {
     loader: Arc<RwLock<CustomCommandLoader>>,
     executor: CustomCommandExecutor,
+    security_manager: Arc<RwLock<SecurityConfigManager>>,
 }
 
 impl Default for CustomCommandIntegration {
@@ -30,10 +32,15 @@ impl Default for CustomCommandIntegration {
 impl CustomCommandIntegration {
     /// 新しい統合マネージャーを作成
     pub fn new() -> Self {
+        // ホームディレクトリの.aws/amazonqにセキュリティ設定を保存
+        let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let config_dir = home_dir.join(".aws").join("amazonq");
+        
         Self {
             loader: Arc::new(RwLock::new(CustomCommandLoader::new())),
             executor: CustomCommandExecutor::new()
                 .with_security_mode(SecurityMode::Warning), // デフォルトは警告モード
+            security_manager: Arc::new(RwLock::new(SecurityConfigManager::new(&config_dir))),
         }
     }
     
@@ -86,8 +93,11 @@ impl CustomCommandIntegration {
             }
         }
         
-        // コマンドを実行
-        let result = self.executor.execute(&command, args, os)
+        // 現在のセキュリティ設定を取得
+        let security_config = self.get_current_security_config().await;
+        
+        // コマンドを実行（セキュリティ設定付き）
+        let result = self.executor.execute_with_security(&command, args, os, &security_config)
             .await
             .map_err(|e| ChatError::Custom(format!("Custom command execution failed: {}", e).into()))?;
         
@@ -281,6 +291,40 @@ impl CustomCommandIntegration {
         preview.push(format!("```\n{}\n```", processed_content));
         
         Ok(preview.join("\n"))
+    }
+    
+    /// セキュリティ検証を有効にする
+    pub async fn enable_security(&mut self) -> Result<(), crate::cli::chat::custom_commands::error::CustomCommandError> {
+        let mut manager = self.security_manager.write().await;
+        manager.load_config().await?;
+        manager.enable_security().await
+    }
+    
+    /// セキュリティ検証を無効にする
+    pub async fn disable_security(&mut self) -> Result<(), crate::cli::chat::custom_commands::error::CustomCommandError> {
+        let mut manager = self.security_manager.write().await;
+        manager.load_config().await?;
+        manager.disable_security().await
+    }
+    
+    /// セキュリティ検証を警告レベルに設定
+    pub async fn set_security_warn(&mut self) -> Result<(), crate::cli::chat::custom_commands::error::CustomCommandError> {
+        let mut manager = self.security_manager.write().await;
+        manager.load_config().await?;
+        manager.set_security_warn().await
+    }
+    
+    /// セキュリティ設定の状態を取得
+    pub async fn get_security_status(&self) -> String {
+        let manager = self.security_manager.read().await;
+        manager.get_status_string()
+    }
+    
+    /// 現在のセキュリティ設定を取得
+    pub async fn get_current_security_config(&self) -> crate::cli::chat::custom_commands::parser::SecurityValidationConfig {
+        let mut manager = self.security_manager.write().await;
+        let _ = manager.load_config().await; // エラーは無視してデフォルト設定を使用
+        manager.get_config().clone()
     }
 }
 

@@ -26,7 +26,18 @@ pub enum CustomCommandsArgs {
     },
     /// Initialize custom commands directory
     Init,
-
+    /// Enable security validation for dangerous patterns (default)
+    #[clap(name = "secure_on")]
+    SecureOn,
+    /// Disable security validation for dangerous patterns
+    #[clap(name = "secure_off")]
+    SecureOff,
+    /// Set security validation to warning level only
+    #[clap(name = "secure_warn")]
+    SecureWarn,
+    /// Show current security validation status
+    #[clap(name = "secure_status")]
+    SecureStatus,
 }
 
 
@@ -104,6 +115,92 @@ impl CustomCommandsArgs {
 
                 Ok(ChatState::PromptUser { skip_printing_tools: true })
             },
+            
+            CustomCommandsArgs::SecureOn => {
+                match session.custom_command_integration.enable_security().await {
+                    Ok(_) => {
+                        execute!(
+                            session.stderr,
+                            style::SetForegroundColor(Color::Green),
+                            style::Print("✅ セキュリティ検証を有効にしました\n"),
+                            style::SetForegroundColor(Color::White),
+                            style::Print("危険なパターンが検出された場合、エラーとして処理されます。\n"),
+                            style::ResetColor
+                        )?;
+                    },
+                    Err(e) => {
+                        execute!(
+                            session.stderr,
+                            style::SetForegroundColor(Color::Red),
+                            style::Print(format!("❌ セキュリティ設定の更新に失敗しました: {}\n", e)),
+                            style::ResetColor
+                        )?;
+                    }
+                }
+                Ok(ChatState::PromptUser { skip_printing_tools: true })
+            },
+            
+            CustomCommandsArgs::SecureOff => {
+                match session.custom_command_integration.disable_security().await {
+                    Ok(_) => {
+                        execute!(
+                            session.stderr,
+                            style::SetForegroundColor(Color::Yellow),
+                            style::Print("⚠️  セキュリティ検証を無効にしました\n"),
+                            style::SetForegroundColor(Color::White),
+                            style::Print("危険なパターンが検出されても実行が許可されます。注意してください。\n"),
+                            style::ResetColor
+                        )?;
+                    },
+                    Err(e) => {
+                        execute!(
+                            session.stderr,
+                            style::SetForegroundColor(Color::Red),
+                            style::Print(format!("❌ セキュリティ設定の更新に失敗しました: {}\n", e)),
+                            style::ResetColor
+                        )?;
+                    }
+                }
+                Ok(ChatState::PromptUser { skip_printing_tools: true })
+            },
+            
+            CustomCommandsArgs::SecureWarn => {
+                match session.custom_command_integration.set_security_warn().await {
+                    Ok(_) => {
+                        execute!(
+                            session.stderr,
+                            style::SetForegroundColor(Color::Blue),
+                            style::Print("🔵 セキュリティ検証を警告レベルに設定しました\n"),
+                            style::SetForegroundColor(Color::White),
+                            style::Print("危険なパターンが検出された場合、警告が表示されますがエラーにはなりません。\n"),
+                            style::ResetColor
+                        )?;
+                    },
+                    Err(e) => {
+                        execute!(
+                            session.stderr,
+                            style::SetForegroundColor(Color::Red),
+                            style::Print(format!("❌ セキュリティ設定の更新に失敗しました: {}\n", e)),
+                            style::ResetColor
+                        )?;
+                    }
+                }
+                Ok(ChatState::PromptUser { skip_printing_tools: true })
+            },
+            
+            CustomCommandsArgs::SecureStatus => {
+                let status = session.custom_command_integration.get_security_status().await;
+                execute!(
+                    session.stderr,
+                    style::SetForegroundColor(Color::Cyan),
+                    style::Print("📊 セキュリティ検証設定:\n\n"),
+                    style::SetForegroundColor(Color::White),
+                    style::Print(status),
+                    style::ResetColor,
+                    style::Print("\n")
+                )?;
+                Ok(ChatState::PromptUser { skip_printing_tools: true })
+            },
 
         }
     }
@@ -140,5 +237,18 @@ mod tests {
 
         let init_cmd = CustomCommandsArgs::Init;
         assert!(matches!(init_cmd, CustomCommandsArgs::Init));
+        
+        // セキュリティコマンドのテスト
+        let secure_on_cmd = CustomCommandsArgs::SecureOn;
+        assert!(matches!(secure_on_cmd, CustomCommandsArgs::SecureOn));
+        
+        let secure_off_cmd = CustomCommandsArgs::SecureOff;
+        assert!(matches!(secure_off_cmd, CustomCommandsArgs::SecureOff));
+        
+        let secure_warn_cmd = CustomCommandsArgs::SecureWarn;
+        assert!(matches!(secure_warn_cmd, CustomCommandsArgs::SecureWarn));
+        
+        let secure_status_cmd = CustomCommandsArgs::SecureStatus;
+        assert!(matches!(secure_status_cmd, CustomCommandsArgs::SecureStatus));
     }
 }

