@@ -49,3 +49,11 @@ book/
 .env*
 
 run-build.sh
+
+# Custom command directories (project-local)
+.amazonq/commands/
+.claude/commands/
+
+# IDE and development tools
+.cursorindexingignore
+.specstory/
