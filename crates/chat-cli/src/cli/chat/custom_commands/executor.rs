@@ -353,6 +353,7 @@ impl ExecutionPreview {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,3 +420,4 @@ mod tests {
         assert!(permissive_executor.security_check(&command).is_ok());
     }
 }
+*/

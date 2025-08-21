@@ -161,9 +161,10 @@ impl PromptProcessor {
         }
     }
     
-    /// ファイル参照を抽出（@filename パターン）
+    /// ファイル参照を抽出（@filename パターン）  
+    /// メールアドレス（word@domain）は除外し、行頭・空白・特定記号後の@filenameのみ対象
     pub fn extract_file_references(content: &str) -> Vec<String> {
-        let file_ref_regex = Regex::new(r"@([^\s@]+)")
+        let file_ref_regex = Regex::new(r"(?:^|[\s\n\r>])\s*@([a-zA-Z0-9._/-]+)")
             .expect("Failed to compile file reference regex");
         
         file_ref_regex

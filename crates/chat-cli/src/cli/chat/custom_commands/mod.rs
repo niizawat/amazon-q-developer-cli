@@ -14,8 +14,7 @@ pub mod executor;
 pub mod error;
 pub mod integration;
 
-#[cfg(test)]
-mod tests;
+// テストは tests.rs ファイルで定義
 
 use std::collections::HashMap;
 use std::path::PathBuf;

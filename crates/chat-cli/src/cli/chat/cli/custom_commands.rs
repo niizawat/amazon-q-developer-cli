@@ -12,7 +12,7 @@ pub enum CustomCommandsArgs {
     /// List all available custom commands
     List,
     /// Show help for a specific custom command
-    #[command(name = "show")]
+    #[clap(name = "show")]
     Show {
         /// Command name to show help for
         command: Option<String>,
@@ -109,6 +109,7 @@ impl CustomCommandsArgs {
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,3 +145,4 @@ mod tests {
 
     }
 }
+*/

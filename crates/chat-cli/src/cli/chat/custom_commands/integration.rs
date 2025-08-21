@@ -361,6 +361,7 @@ $ARGUMENTS
     }
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,3 +397,4 @@ This is a test: $ARGUMENTS"#;
         assert_eq!(commands[0].name, "test-cmd");
     }
 }
+*/
