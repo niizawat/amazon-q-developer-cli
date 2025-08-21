@@ -2,6 +2,7 @@ pub mod cli;
 mod consts;
 pub mod context;
 mod conversation;
+pub mod custom_commands;
 mod error_formatter;
 mod input_source;
 mod message;
@@ -571,6 +572,8 @@ pub struct ChatSession {
     interactive: bool,
     inner: Option<ChatState>,
     ctrlc_rx: broadcast::Receiver<()>,
+    /// Custom slash commands integration
+    custom_command_integration: custom_commands::integration::CustomCommandIntegration,
 }
 
 impl ChatSession {
@@ -668,6 +671,7 @@ impl ChatSession {
             interactive,
             inner: Some(ChatState::default()),
             ctrlc_rx,
+            custom_command_integration: custom_commands::integration::CustomCommandIntegration::new(),
         })
     }
 
@@ -1643,6 +1647,35 @@ impl ChatSession {
                     writeln!(self.stderr)?;
                 },
                 Err(err) => {
+                    // Check if this might be a custom command before showing the error
+                    let command_name = orig_args.first().unwrap_or(&String::new()).clone();
+                    if !command_name.is_empty() {
+                        // Check if it's a custom command first
+                        let is_custom = self.custom_command_integration.is_custom_command(&command_name, os).await;
+                        if is_custom {
+                            // Execute as custom command
+                            let custom_args = if orig_args.len() > 1 {
+                                &orig_args[1..]
+                            } else {
+                                &[]
+                            };
+                            
+                            match self.custom_command_integration.execute_custom_command(&command_name, custom_args, os).await {
+                                Ok(result) => return Ok(ChatState::HandleInput { input: result }),
+                                Err(custom_err) => {
+                                    queue!(
+                                        self.stderr,
+                                        style::SetForegroundColor(Color::Red),
+                                        style::Print(format!("\nFailed to execute custom command '{}': {}\n", command_name, custom_err)),
+                                        style::SetForegroundColor(Color::Reset)
+                                    )?;
+                                    writeln!(self.stderr)?;
+                                    return Ok(ChatState::PromptUser { skip_printing_tools: true });
+                                }
+                            }
+                        }
+                    }
+                    
                     // Replace the dummy name with a slash. Also have to check for an ansi sequence
                     // for invalid slash commands (e.g. on a "/doesntexist" input).
                     let ansi_output = err

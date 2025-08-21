@@ -1,6 +1,7 @@
 pub mod clear;
 pub mod compact;
 pub mod context;
+pub mod custom_commands;
 pub mod editor;
 pub mod hooks;
 pub mod knowledge;
@@ -17,6 +18,7 @@ use clap::Parser;
 use clear::ClearArgs;
 use compact::CompactArgs;
 use context::ContextSubcommand;
+use custom_commands::CustomCommandsArgs;
 use editor::EditorArgs;
 use hooks::HooksArgs;
 use knowledge::KnowledgeSubcommand;
@@ -81,6 +83,9 @@ pub enum SlashCommand {
     Model(ModelArgs),
     /// Upgrade to a Q Developer Pro subscription for increased query limits
     Subscribe(SubscribeArgs),
+    /// Manage custom slash commands
+    #[command(subcommand)]
+    Custom(CustomCommandsArgs),
     #[command(flatten)]
     Persist(PersistSubcommand),
     // #[command(flatten)]
@@ -136,6 +141,7 @@ impl SlashCommand {
             Self::Mcp(args) => args.execute(session).await,
             Self::Model(args) => args.execute(os, session).await,
             Self::Subscribe(args) => args.execute(os, session).await,
+            Self::Custom(args) => args.execute(os, session).await,
             Self::Persist(subcommand) => subcommand.execute(os, session).await,
             // Self::Root(subcommand) => {
             //     if let Err(err) = subcommand.execute(os, database, telemetry).await {
@@ -167,6 +173,7 @@ impl SlashCommand {
             Self::Mcp(_) => "mcp",
             Self::Model(_) => "model",
             Self::Subscribe(_) => "subscribe",
+            Self::Custom(_) => "custom",
             Self::Persist(sub) => match sub {
                 PersistSubcommand::Save { .. } => "save",
                 PersistSubcommand::Load { .. } => "load",

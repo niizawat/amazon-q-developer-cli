@@ -88,6 +88,12 @@ pub const COMMANDS: &[&str] = &[
     "/save",
     "/load",
     "/subscribe",
+    "/custom",
+    "/custom list",
+    "/custom show",
+    "/custom preview",
+    "/custom init",
+
 ];
 
 pub type PromptQuerySender = tokio::sync::broadcast::Sender<PromptQuery>;
