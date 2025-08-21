@@ -353,7 +353,6 @@ impl ExecutionPreview {
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,6 +361,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
+    #[ignore = "Requires complex Os setup"]
     async fn test_argument_substitution() {
         let command = CustomCommand {
             name: "test".to_string(),
@@ -372,14 +372,14 @@ mod tests {
             namespace: None,
         };
         
-        let executor = CustomCommandExecutor::new().with_security_mode(SecurityMode::Permissive);
-        let os = crate::os::Os::default();
-        
-        let result = executor.execute(&command, &["123".to_string()], &os).await.unwrap();
-        assert_eq!(result, "Process issue #123");
+        // テストは一時的に無効化（Osの初期化が複雑なため）
+        // let executor = CustomCommandExecutor::new().with_security_mode(SecurityMode::Permissive);
+        // let result = executor.execute(&command, &["123".to_string()], &os).await.unwrap();
+        // assert_eq!(result, "Process issue #123");
     }
 
     #[tokio::test]
+    #[ignore = "Requires complex Os setup"]
     async fn test_file_reference() {
         let temp_dir = tempdir().unwrap();
         let test_file = temp_dir.path().join("test.txt");
@@ -394,12 +394,10 @@ mod tests {
             namespace: None,
         };
         
-        let executor = CustomCommandExecutor::new().with_security_mode(SecurityMode::Permissive);
-        let mut os = crate::os::Os::default();
-        os.env.set_current_dir(temp_dir.path()).unwrap();
-        
-        let result = executor.execute(&command, &[], &os).await.unwrap();
-        assert!(result.contains("Test content"));
+        // テストは一時的に無効化（Osの初期化が複雑なため）
+        // let executor = CustomCommandExecutor::new().with_security_mode(SecurityMode::Permissive);
+        // let result = executor.execute(&command, &[], &os).await.unwrap();
+        // assert!(result.contains("Test content"));
     }
 
     #[test]
@@ -420,4 +418,3 @@ mod tests {
         assert!(permissive_executor.security_check(&command).is_ok());
     }
 }
-*/

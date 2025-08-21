@@ -39,7 +39,6 @@ mod parser_tests {
     }
 }
 
-/*
 #[cfg(test)]
 mod integration_tests {
     use super::super::*;
@@ -396,5 +395,3 @@ mod unit_tests {
         assert_eq!(info.phase, Some("test".to_string()));
     }
 }
-
-*/

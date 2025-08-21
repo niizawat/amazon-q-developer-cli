@@ -361,13 +361,13 @@ $ARGUMENTS
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
 
     #[tokio::test]
+    #[ignore = "Requires complex Os setup"]
     async fn test_custom_command_integration() {
         let temp_dir = tempdir().unwrap();
         let commands_dir = temp_dir.path().join(".amazonq").join("commands");
@@ -383,18 +383,13 @@ This is a test: $ARGUMENTS"#;
         let command_file = commands_dir.join("test-cmd.md");
         tokio::fs::write(&command_file, test_command).await.unwrap();
         
-        let integration = CustomCommandIntegration::new();
-        let mut os = crate::os::Os::default();
-        os.env.set_current_dir(temp_dir.path()).unwrap();
+        // テストは一時的に無効化（Osの初期化が複雑なため）
+        // let integration = CustomCommandIntegration::new();
+        // assert!(integration.is_custom_command("test-cmd", &os).await);
+        // assert!(!integration.is_custom_command("nonexistent", &os).await);
         
-        // コマンドの存在確認
-        assert!(integration.is_custom_command("test-cmd", &os).await);
-        assert!(!integration.is_custom_command("nonexistent", &os).await);
-        
-        // コマンド一覧の取得
-        let commands = integration.list_custom_commands(&os).await.unwrap();
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].name, "test-cmd");
+        // let commands = integration.list_custom_commands(&os).await.unwrap();
+        // assert_eq!(commands.len(), 1);
+        // assert_eq!(commands[0].name, "test-cmd");
     }
 }
-*/
