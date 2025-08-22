@@ -322,16 +322,36 @@ impl SecurityConfigManager {
 pub struct PromptProcessor;
 
 impl PromptProcessor {
-    /// 引数置換を実行（$ARGUMENTS プレースホルダー）
+    /// 引数置換を実行（$ARGUMENTS プレースホルダー + 自動引数追記）
     pub fn substitute_arguments(content: &str, args: &[String]) -> String {
         if args.is_empty() {
-            // 引数がない場合は$ARGUMENTSを空文字に置換
-            content.replace("$ARGUMENTS", "")
-        } else {
-            // 複数の引数をスペース区切りで結合
-            let args_string = shell_words::join(args);
-            content.replace("$ARGUMENTS", &args_string)
+            // 引数がない場合は$ARGUMENTSを空文字に置換するだけ
+            return content.replace("$ARGUMENTS", "");
         }
+        
+        // 複数の引数をスペース区切りで結合
+        let args_string = shell_words::join(args);
+        
+        // $ARGUMENTSプレースホルダーが存在するかチェック
+        let has_arguments_placeholder = content.contains("$ARGUMENTS");
+        
+        let mut result = if has_arguments_placeholder {
+            // プレースホルダーが存在する場合は従来通り置換
+            content.replace("$ARGUMENTS", &args_string)
+        } else {
+            // プレースホルダーがない場合は元のコンテンツをそのまま使用
+            content.to_string()
+        };
+        
+        // プレースホルダーがない場合でも引数が存在する場合は、自動的に引数情報を追記
+        if !has_arguments_placeholder {
+            // プロンプトの最後に引数情報を追記
+            result.push_str("\n\n---\n\n**コマンド引数:**\n");
+            result.push_str(&format!("```\n{}\n```", args_string));
+            result.push_str("\n\n上記の引数を考慮して処理を実行してください。");
+        }
+        
+        result
     }
     
     /// ファイル参照を抽出（@filename パターン）  
@@ -517,6 +537,7 @@ impl PromptProcessor {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use shlex;
 
     #[test]
     fn test_parse_markdown_with_frontmatter() {
@@ -674,6 +695,223 @@ Just markdown content without frontmatter."#;
         let safe_content = "Check status: !`git status`";
         let result = PromptProcessor::validate_content(safe_content);
         assert!(result.is_ok(), "安全なコンテンツは問題ないべき");
+    }
+    
+    #[test]
+    fn test_auto_argument_append() {
+        // 自動引数追記機能のテスト
+        println!("=== 自動引数追記機能のテスト ===");
+        
+        let args = vec![
+            "docs/tasks/PeopleSearchApps-Migration-tasks.md".to_string(),
+            "TASK-301".to_string(),
+        ];
+        
+        // ケース1: $ARGUMENTSプレースホルダーがある場合（従来通り）
+        let content_with_placeholder = r#"# タスク実装
+
+指定された引数: $ARGUMENTS
+
+処理を開始します。"#;
+        
+        let result1 = PromptProcessor::substitute_arguments(content_with_placeholder, &args);
+        println!("1. $ARGUMENTSプレースホルダーがある場合:");
+        println!("{}", result1);
+        
+        // 検証: プレースホルダーが置換され、自動追記はされない
+        assert!(result1.contains("docs/tasks/PeopleSearchApps-Migration-tasks.md TASK-301"));
+        assert!(!result1.contains("$ARGUMENTS"));
+        assert!(!result1.contains("**コマンド引数:**")); // 自動追記なし
+        
+        println!("\n{}\n", "=".repeat(50));
+        
+        // ケース2: $ARGUMENTSプレースホルダーがない場合（新機能）
+        let content_without_placeholder = r#"# タスク実装コマンド
+
+## 目的
+分割されたタスクを順番に実装する。
+
+## 実行内容
+1. タスクの選択
+2. 依存関係の確認
+3. 実装プロセスの実行"#;
+        
+        let result2 = PromptProcessor::substitute_arguments(content_without_placeholder, &args);
+        println!("2. $ARGUMENTSプレースホルダーがない場合（引数自動追記）:");
+        println!("{}", result2);
+        
+        // 検証: 元のコンテンツは保持され、引数情報が自動追記される
+        assert!(result2.contains("# タスク実装コマンド"));
+        assert!(result2.contains("**コマンド引数:**"));
+        assert!(result2.contains("docs/tasks/PeopleSearchApps-Migration-tasks.md TASK-301"));
+        assert!(result2.contains("上記の引数を考慮して処理を実行してください。"));
+        
+        println!("\n{}\n", "=".repeat(50));
+        
+        // ケース3: 引数がない場合
+        let empty_args: Vec<String> = vec![];
+        let result3 = PromptProcessor::substitute_arguments(content_without_placeholder, &empty_args);
+        println!("3. 引数がない場合:");
+        println!("{}", result3);
+        
+        // 検証: 元のコンテンツのみ（自動追記なし）
+        assert_eq!(result3, content_without_placeholder);
+        assert!(!result3.contains("**コマンド引数:**"));
+        
+        println!("\n✅ すべてのテストケースが正常に動作しました！");
+    }
+
+    #[test]
+    fn test_frontmatter_in_prompt() {
+        // Frontmatterがプロンプトに含まれるかどうかをテスト
+        use crate::cli::chat::custom_commands::{CustomCommand, CommandScope, CommandFrontmatter};
+        use std::path::PathBuf;
+        
+        // Frontmatterありのコマンドを作成
+        let frontmatter = CommandFrontmatter {
+            description: Some("テスト実装コマンド".to_string()),
+            argument_hint: Some("<task-file> <task-id>".to_string()),
+            allowed_tools: Some(vec!["fs_read".to_string()]),
+            model: Some("claude-3.5-sonnet".to_string()),
+            phase: None,
+            dependencies: None,
+            output_format: None,
+        };
+        
+        let command = CustomCommand {
+            name: "test-command".to_string(),
+            content: r#"# テストコマンド
+
+引数: $ARGUMENTS
+
+処理を開始します。"#.to_string(),
+            frontmatter: Some(frontmatter),
+            scope: CommandScope::Global,
+            file_path: PathBuf::from("/test/command.md"),
+            namespace: None,
+        };
+        
+        let args = vec!["file.md".to_string(), "TASK-001".to_string()];
+        
+        // 実際にプロンプトに渡される内容（command.contentのみ）
+        let processed_content = PromptProcessor::substitute_arguments(&command.content, &args);
+        
+        println!("=== Frontmatterの処理テスト ===");
+        println!("1. Frontmatter情報:");
+        if let Some(ref fm) = command.frontmatter {
+            println!("   description: {:?}", fm.description);
+            println!("   argument_hint: {:?}", fm.argument_hint);
+            println!("   allowed_tools: {:?}", fm.allowed_tools);
+        }
+        
+        println!("\n2. プロンプトに実際に渡される内容:");
+        println!("{}", processed_content);
+        
+        // 検証: Frontmatterの情報はプロンプトに含まれない
+        assert!(!processed_content.contains("テスト実装コマンド"));
+        assert!(!processed_content.contains("<task-file> <task-id>"));
+        assert!(!processed_content.contains("fs_read"));
+        
+        // 検証: 引数置換のみが行われる
+        assert!(processed_content.contains("file.md TASK-001"));
+        assert!(processed_content.contains("# テストコマンド"));
+    }
+
+    #[test]
+    fn test_argument_processing_flow() {
+        // 引数処理の流れを詳しく確認
+        let args = vec![
+            "docs/tasks/PeopleSearchApps-Migration-tasks.md".to_string(),
+            "TASK-301".to_string(),
+        ];
+        
+        println!("=== 引数処理の流れ ===");
+        println!("1. 分割された引数配列:");
+        for (i, arg) in args.iter().enumerate() {
+            println!("   args[{}]: '{}'", i, arg);
+        }
+        
+        // shell_words::joinでの結合処理
+        let joined = shell_words::join(&args);
+        println!("\n2. shell_words::join結果: '{}'", joined);
+        
+        // プロンプト内容の例
+        let prompt_content = r#"
+# タスク実装コマンド
+
+## 引数情報
+指定された引数: $ARGUMENTS
+
+## 処理対象
+- タスクファイル: $1
+- タスクID: $2
+
+## 実行内容
+引数を解析して実装を開始します。
+"#;
+        
+        println!("\n3. プロンプト内容（置換前）:");
+        println!("{}", prompt_content);
+        
+        // 実際の置換処理
+        let processed = PromptProcessor::substitute_arguments(prompt_content, &args);
+        println!("\n4. プロンプト内容（置換後）:");
+        println!("{}", processed);
+        
+        // 検証
+        assert!(processed.contains(&joined));
+        assert!(!processed.contains("$ARGUMENTS")); // プレースホルダーが置換されている
+        assert!(processed.contains("$1")); // 個別引数プレースホルダーは置換されない
+        assert!(processed.contains("$2"));
+    }
+    
+    #[test] 
+    fn test_shlex_parsing_debug() {
+        // カスタムコマンドの引数パースの問題を調査
+        let input = "/kairo-implement docs/tasks/PeopleSearchApps-Migration-tasks.md TASK-301";
+        println!("入力: {}", input);
+        
+        // "/" を削除
+        let stripped = input.strip_prefix("/").unwrap();
+        println!("/ を削除後: {}", stripped);
+        
+        // shlex::split で分割
+        if let Some(args) = shlex::split(stripped) {
+            println!("shlex::split結果:");
+            for (i, arg) in args.iter().enumerate() {
+                println!("  [{}]: '{}'", i, arg);
+            }
+            
+            // orig_argsに相当
+            let orig_args = args.clone();
+            println!("\norig_args:");
+            for (i, arg) in orig_args.iter().enumerate() {
+                println!("  [{}]: '{}'", i, arg);
+            }
+            
+            // コマンド名の抽出
+            let command_name = orig_args.first().unwrap_or(&String::new()).clone();
+            println!("\ncommand_name: '{}'", command_name);
+            
+            // カスタムコマンドの引数
+            let custom_args = if orig_args.len() > 1 {
+                &orig_args[1..]
+            } else {
+                &[]
+            };
+            println!("\ncustom_args:");
+            for (i, arg) in custom_args.iter().enumerate() {
+                println!("  [{}]: '{}'", i, arg);
+            }
+            
+            // 期待される結果の検証
+            assert_eq!(command_name, "kairo-implement");
+            assert_eq!(custom_args.len(), 2);
+            assert_eq!(custom_args[0], "docs/tasks/PeopleSearchApps-Migration-tasks.md");
+            assert_eq!(custom_args[1], "TASK-301");
+        } else {
+            panic!("shlex::split failed!");
+        }
     }
     
     #[tokio::test]
