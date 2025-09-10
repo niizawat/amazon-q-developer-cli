@@ -1,82 +1,88 @@
-/// Custom Slash Commands機能の実装
-/// 
-/// この機能は以下をサポートします：
-/// - マークダウンファイルからのカスタムコマンド読み込み
-/// - フロントマッター（YAML）の解析
-/// - 引数置換（$ARGUMENTS）
-/// - ファイル参照（@filename）
-/// - Bashコマンド実行（!command）
-/// - Claude Code互換性（.claude/commands/）
+//! Custom Slash Commands functionality implementation
+//!
+//! This functionality supports:
+//! - Loading custom commands from markdown files
+//! - Parsing frontmatter (YAML)
+//! - Argument substitution ($ARGUMENTS)
+//! - File references (@filename)
+//! - Bash command execution (!command)
 
+#![allow(dead_code)]
+
+pub mod error;
+pub mod executor;
+pub mod integration;
 pub mod loader;
 pub mod parser;
-pub mod executor;
-pub mod error;
-pub mod integration;
 
-// テストは tests.rs ファイルで定義
+// Tests are defined in tests.rs file
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
+
+use serde::{
+    Deserialize,
+    Serialize,
+};
+
 use crate::os::Os;
 
-/// カスタムコマンドの定義
+/// Custom command definition
 #[derive(Debug, Clone)]
 pub struct CustomCommand {
-    /// コマンド名（ファイル名から拡張子を除いたもの）
+    /// Command name (filename without extension)
     pub name: String,
-    /// コマンドの内容（マークダウン）
+    /// Command content (markdown)
     pub content: String,
-    /// フロントマッター（メタデータ）
+    /// Frontmatter (metadata)
     pub frontmatter: Option<CommandFrontmatter>,
-    /// プロジェクトコマンドかグローバルコマンドか
+    /// Whether it's a project command or global command
     pub scope: CommandScope,
-    /// コマンドファイルのパス
+    /// Command file path
     pub file_path: PathBuf,
-    /// 名前空間（ディレクトリによる分類）
+    /// Namespace (classification by directory)
     pub namespace: Option<String>,
 }
 
-/// コマンドのスコープ
+/// Command scope
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommandScope {
-    /// プロジェクト固有のコマンド (.amazonq/commands/ または .claude/commands/)
+    /// Project-specific commands (.amazonq/commands/)
     Project,
-    /// ユーザーグローバルコマンド (~/.aws/amazonq/commands/)
+    /// User global commands (~/.aws/amazonq/commands/)
     Global,
 }
 
-/// コマンドのフロントマッター（YAML）
+/// Command frontmatter (YAML)
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CommandFrontmatter {
-    /// 許可されるツール
+    /// Allowed tools
     #[serde(rename = "allowed-tools")]
     pub allowed_tools: Option<Vec<String>>,
-    
-    /// 引数のヒント
+
+    /// Argument hint
     #[serde(rename = "argument-hint")]
     pub argument_hint: Option<String>,
-    
-    /// コマンドの説明
+
+    /// Command description
     pub description: Option<String>,
-    
-    /// 使用するモデル
+
+    /// Model to use
     pub model: Option<String>,
-    
-    /// Tsumiki互換: 開発フェーズ
+
+    /// Tsumiki compatible: development phase
     pub phase: Option<String>,
-    
-    /// Tsumiki互換: 依存コマンド
+
+    /// Tsumiki compatible: dependent commands
     pub dependencies: Option<Vec<String>>,
-    
-    /// Tsumiki互換: 出力形式
+
+    /// Tsumiki compatible: output format
     #[serde(rename = "output-format")]
     pub output_format: Option<String>,
 }
 
-/// 名前空間付きコマンド情報
+/// Namespaced command information
 #[derive(Debug, Clone)]
 pub struct NamespacedCommand {
     pub namespace: CommandNamespace,
@@ -84,23 +90,23 @@ pub struct NamespacedCommand {
     pub command: Arc<CustomCommand>,
 }
 
-/// コマンドの名前空間
+/// Command namespace
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommandNamespace {
-    /// Tsumiki Kairoフロー
+    /// Tsumiki Kairo flow
     Kairo,
-    /// Tsumiki TDDフロー
+    /// Tsumiki TDD flow
     Tdd,
-    /// Tsumiki リバースエンジニアリング
+    /// Tsumiki reverse engineering
     Rev,
-    /// その他のカスタム名前空間
+    /// Other custom namespace
     Custom(String),
-    /// 名前空間なし
+    /// No namespace
     None,
 }
 
 impl CommandNamespace {
-    /// コマンド名から名前空間を推測
+    /// Infer namespace from command name
     pub fn from_command_name(name: &str) -> Self {
         if name.starts_with("kairo-") {
             Self::Kairo
@@ -118,12 +124,12 @@ impl CommandNamespace {
             Self::None
         }
     }
-    
-    /// 名前空間の表示名
+
+    /// Display name of the namespace
     pub fn display_name(&self) -> &str {
         match self {
             Self::Kairo => "kairo",
-            Self::Tdd => "tdd", 
+            Self::Tdd => "tdd",
             Self::Rev => "rev",
             Self::Custom(name) => name,
             Self::None => "",
@@ -131,14 +137,14 @@ impl CommandNamespace {
     }
 }
 
-/// カスタムコマンドのキャッシュ
+/// Custom command cache
 #[derive(Debug)]
 pub struct CustomCommandCache {
-    /// コマンド名 -> コマンド定義のマップ
+    /// Map of command name -> command definition
     commands: HashMap<String, Arc<CustomCommand>>,
-    /// 最後にスキャンした時刻
+    /// Last scan time
     last_scan: std::time::Instant,
-    /// スキャン間隔
+    /// Scan interval
     scan_interval: std::time::Duration,
 }
 
@@ -147,23 +153,23 @@ impl Default for CustomCommandCache {
         Self {
             commands: HashMap::new(),
             last_scan: std::time::Instant::now(),
-            scan_interval: std::time::Duration::from_secs(30), // 30秒間隔
+            scan_interval: std::time::Duration::from_secs(30), // 30 second interval
         }
     }
 }
 
 impl CustomCommandCache {
-    /// 新しいキャッシュを作成
+    /// Create a new cache
     pub fn new() -> Self {
         Self::default()
     }
-    
-    /// 再スキャンが必要かチェック
+
+    /// Check if rescan is needed
     pub fn needs_rescan(&self) -> bool {
         self.last_scan.elapsed() > self.scan_interval
     }
-    
-    /// コマンドを取得（必要に応じて再スキャン）
+
+    /// Get command (rescan if needed)
     pub async fn get_command(&mut self, name: &str, os: &Os) -> Option<Arc<CustomCommand>> {
         if self.needs_rescan() {
             if let Err(e) = self.refresh(os).await {
@@ -172,74 +178,79 @@ impl CustomCommandCache {
         }
         self.commands.get(name).cloned()
     }
-    
-    /// すべてのコマンド名を取得
+
+    /// Get all command names
     pub fn command_names(&self) -> Vec<String> {
         self.commands.keys().cloned().collect()
     }
-    
-    /// キャッシュを更新
+
+    /// Refresh cache
     pub async fn refresh(&mut self, os: &Os) -> Result<(), error::CustomCommandError> {
         let loader = loader::CustomCommandLoader::new();
         self.commands = loader.load_all_commands(os).await?;
         self.last_scan = std::time::Instant::now();
         Ok(())
     }
-    
-    /// コマンドを手動で追加
+
+    /// Manually add command
     pub fn add_command(&mut self, command: CustomCommand) {
         let name = command.name.clone();
         self.commands.insert(name, Arc::new(command));
     }
-    
-    /// コマンドを削除
+
+    /// Remove command
     pub fn remove_command(&mut self, name: &str) -> Option<Arc<CustomCommand>> {
         self.commands.remove(name)
     }
 }
 
-/// カスタムコマンドマネージャー
+/// Custom command manager
 pub struct CustomCommandManager {
     cache: CustomCommandCache,
 }
 
 impl CustomCommandManager {
-    /// 新しいマネージャーを作成
+    /// Create a new manager
     pub fn new() -> Self {
         Self {
             cache: CustomCommandCache::new(),
         }
     }
-    
-    /// コマンドを実行
+
+    /// Execute command
     pub async fn execute_command(
         &mut self,
         command_name: &str,
         args: &[String],
         os: &Os,
     ) -> Result<String, error::CustomCommandError> {
-        let command = self.cache.get_command(command_name, os).await
+        let command = self
+            .cache
+            .get_command(command_name, os)
+            .await
             .ok_or_else(|| error::CustomCommandError::CommandNotFound(command_name.to_string()))?;
-            
+
         let executor = executor::CustomCommandExecutor::new();
         executor.execute(&command, args, os).await
     }
-    
-    /// 利用可能なコマンド一覧を取得
+
+    /// Get list of available commands
     pub async fn list_commands(&mut self, os: &Os) -> Result<Vec<String>, error::CustomCommandError> {
         if self.cache.needs_rescan() {
             self.cache.refresh(os).await?;
         }
         Ok(self.cache.command_names())
     }
-    
-    /// コマンドの詳細情報を取得
+
+    /// Get command details
     pub async fn get_command_info(
         &mut self,
         command_name: &str,
         os: &Os,
     ) -> Result<Arc<CustomCommand>, error::CustomCommandError> {
-        self.cache.get_command(command_name, os).await
+        self.cache
+            .get_command(command_name, os)
+            .await
             .ok_or_else(|| error::CustomCommandError::CommandNotFound(command_name.to_string()))
     }
 }
@@ -256,10 +267,16 @@ mod tests {
 
     #[test]
     fn test_command_namespace_detection() {
-        assert_eq!(CommandNamespace::from_command_name("kairo-requirements"), CommandNamespace::Kairo);
+        assert_eq!(
+            CommandNamespace::from_command_name("kairo-requirements"),
+            CommandNamespace::Kairo
+        );
         assert_eq!(CommandNamespace::from_command_name("tdd-red"), CommandNamespace::Tdd);
         assert_eq!(CommandNamespace::from_command_name("rev-tasks"), CommandNamespace::Rev);
-        assert_eq!(CommandNamespace::from_command_name("custom-command"), CommandNamespace::Custom("custom".to_string()));
+        assert_eq!(
+            CommandNamespace::from_command_name("custom-command"),
+            CommandNamespace::Custom("custom".to_string())
+        );
         assert_eq!(CommandNamespace::from_command_name("simple"), CommandNamespace::None);
     }
 
@@ -273,7 +290,7 @@ mod tests {
             file_path: PathBuf::from(".amazonq/commands/test.md"),
             namespace: None,
         };
-        
+
         assert_eq!(project_command.scope, CommandScope::Project);
     }
 }

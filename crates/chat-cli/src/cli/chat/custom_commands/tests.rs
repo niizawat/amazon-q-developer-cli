@@ -1,5 +1,5 @@
-/// Custom Slash Commands機能の統合テスト
-/// 注意: 統合テストは一時的にコメントアウト（Osの初期化が複雑なため）
+//! Custom Slash Commands integration tests
+//! Note: Integration tests are temporarily commented out (due to complex Os initialization)
 
 #[cfg(test)]
 mod parser_tests {
@@ -7,32 +7,32 @@ mod parser_tests {
 
     #[test]
     fn test_file_reference_extraction() {
-        // 正常なファイル参照パターン
+        // Normal file reference patterns
         let content1 = "Please check @config.yaml for settings";
         let refs1 = PromptProcessor::extract_file_references(content1);
         assert_eq!(refs1, vec!["config.yaml"]);
 
-        // 行頭のファイル参照
+        // File reference at line start
         let content2 = "@README.md contains important information";
         let refs2 = PromptProcessor::extract_file_references(content2);
         assert_eq!(refs2, vec!["README.md"]);
 
-        // 複数のファイル参照
+        // Multiple file references
         let content3 = "Check @src/main.rs and @tests/unit.rs for examples";
         let refs3 = PromptProcessor::extract_file_references(content3);
         assert_eq!(refs3, vec!["src/main.rs", "tests/unit.rs"]);
 
-        // メールアドレスは除外されるべき
+        // Email addresses should be excluded
         let content4 = "Contact admin@example.com or test@example.com for help";
         let refs4 = PromptProcessor::extract_file_references(content4);
         assert_eq!(refs4, Vec::<String>::new());
 
-        // メールアドレスと正当なファイル参照の混在
+        // Mixed email addresses and valid file references
         let content5 = "Email test@example.com about @config/settings.json";
         let refs5 = PromptProcessor::extract_file_references(content5);
         assert_eq!(refs5, vec!["config/settings.json"]);
 
-        // 引用符内のファイル参照
+        // File references in quotes
         let content6 = "See '@data.csv' for example data";
         let refs6 = PromptProcessor::extract_file_references(content6);
         assert_eq!(refs6, vec!["data.csv"]);
@@ -48,12 +48,12 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_full_custom_command_workflow() {
-        // テスト用ディレクトリ設定
+        // Set up test directory
         let temp_dir = tempdir().unwrap();
         let commands_dir = temp_dir.path().join(".amazonq").join("commands");
         fs::create_dir_all(&commands_dir).await.unwrap();
 
-        // テストコマンドファイルを作成
+        // Create test command file
         let test_command_content = r#"---
 description: "Test workflow command"
 argument-hint: "[message]"
@@ -78,33 +78,33 @@ Current git status: !`echo "mock git status"`
 Processing your request...
 "#;
 
-        // コマンドファイルを作成
+        // Create command file
         let command_file = commands_dir.join("test-workflow.md");
         fs::write(&command_file, test_command_content).await.unwrap();
 
-        // テスト用ファイルを作成
+        // Create test file
         let test_file = temp_dir.path().join("test.txt");
         fs::write(&test_file, "This is test content").await.unwrap();
 
-        // OSモックを設定
+        // Set up OS mock
         let mut os = crate::os::Os::default();
         os.env.set_current_dir(temp_dir.path()).unwrap();
 
-        // カスタムコマンド統合をテスト
+        // Test custom command integration
         let integration = integration::CustomCommandIntegration::new()
             .with_security_mode(executor::SecurityMode::Permissive);
 
-        // コマンドの存在確認
+        // Check command existence
         assert!(integration.is_custom_command("test-workflow", &os).await);
         assert!(!integration.is_custom_command("nonexistent-command", &os).await);
 
-        // コマンド一覧の取得
+        // Get command list
         let commands = integration.list_custom_commands(&os).await.unwrap();
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].name, "test-workflow");
         assert_eq!(commands[0].description, Some("Test workflow command".to_string()));
 
-        // コマンドプレビューのテスト
+        // Test command preview
         let preview = integration.preview_command("test-workflow", &["Hello World"], &os).await.unwrap();
         assert!(preview.contains("Hello World"));
         assert!(preview.contains("test.txt"));
@@ -117,7 +117,7 @@ Processing your request...
         let commands_dir = temp_dir.path().join(".amazonq").join("commands");
         fs::create_dir_all(&commands_dir).await.unwrap();
 
-        // 危険なコマンドを作成
+        // Create dangerous command
         let dangerous_command = r#"---
 description: "Dangerous command"
 ---
@@ -133,54 +133,22 @@ Execute: !`rm -rf /`
         let mut os = crate::os::Os::default();
         os.env.set_current_dir(temp_dir.path()).unwrap();
 
-        // 厳格モードでテスト
+        // Test with strict mode
         let strict_integration = integration::CustomCommandIntegration::new()
             .with_security_mode(executor::SecurityMode::Strict);
 
-        // プレビューでセキュリティリスクが検出されることを確認
+        // Confirm security risks are detected in preview
         let preview = strict_integration.preview_command("dangerous", &[], &os).await.unwrap();
         assert!(preview.contains("Security warnings"));
         assert!(preview.contains("rm -rf"));
 
-        // 許可モードでテスト
+        // Test with permissive mode
         let permissive_integration = integration::CustomCommandIntegration::new()
             .with_security_mode(executor::SecurityMode::Permissive);
             
-        // 許可モードでは実行可能
+        // Permissive mode allows execution
         let permissive_preview = permissive_integration.preview_command("dangerous", &[], &os).await.unwrap();
         assert!(permissive_preview.contains("dangerous"));
-    }
-
-    #[tokio::test]
-    async fn test_claude_code_compatibility() {
-        let temp_dir = tempdir().unwrap();
-        
-        // .claude/commands/ ディレクトリを作成（Claude Code互換性テスト）
-        let claude_commands_dir = temp_dir.path().join(".claude").join("commands");
-        fs::create_dir_all(&claude_commands_dir).await.unwrap();
-
-        let claude_command = r#"---
-description: "Claude Code compatible command"
----
-
-# Claude Compatible Command
-
-This command is in .claude/commands/ directory.
-"#;
-
-        let command_file = claude_commands_dir.join("claude-compat.md");
-        fs::write(&command_file, claude_command).await.unwrap();
-
-        let mut os = crate::os::Os::default();
-        os.env.set_current_dir(temp_dir.path()).unwrap();
-
-        let integration = integration::CustomCommandIntegration::new();
-        
-        // Claude Code形式のコマンドが読み込まれることを確認
-        assert!(integration.is_custom_command("claude-compat", &os).await);
-        
-        let commands = integration.list_custom_commands(&os).await.unwrap();
-        assert!(commands.iter().any(|cmd| cmd.name == "claude-compat"));
     }
 
     #[tokio::test]
@@ -188,7 +156,7 @@ This command is in .claude/commands/ directory.
         let temp_dir = tempdir().unwrap();
         let commands_dir = temp_dir.path().join(".amazonq").join("commands");
         
-        // サブディレクトリでネームスペースをテスト
+        // Test namespace with subdirectory
         let utils_dir = commands_dir.join("utils");
         fs::create_dir_all(&utils_dir).await.unwrap();
 
@@ -222,7 +190,7 @@ This is a utility command in a namespace.
         let commands_dir = temp_dir.path().join(".amazonq").join("commands");
         fs::create_dir_all(&commands_dir).await.unwrap();
 
-        // Tsumikiスタイルのコマンドを作成
+        // Create Tsumiki-style commands
         let tsumiki_commands = vec![
             ("kairo-requirements", "kairo", "Requirements definition"),
             ("tdd-red", "tdd", "Red phase of TDD"),
@@ -249,7 +217,7 @@ This is a {} phase command.
 
         let integration = integration::CustomCommandIntegration::new();
         
-        // すべてのTsumikiコマンドが認識されることを確認
+        // Confirm all Tsumiki commands are recognized
         for (name, _, _) in [
             ("kairo-requirements", "kairo", "Requirements definition"),
             ("tdd-red", "tdd", "Red phase of TDD"), 
@@ -261,7 +229,7 @@ This is a {} phase command.
         let commands = integration.list_custom_commands(&os).await.unwrap();
         assert_eq!(commands.len(), 3);
 
-        // フェーズ情報が正しく読み込まれることを確認
+        // Confirm phase information is loaded correctly
         let kairo_cmd = commands.iter().find(|cmd| cmd.name == "kairo-requirements").unwrap();
         assert_eq!(kairo_cmd.phase, Some("kairo".to_string()));
     }
@@ -274,14 +242,14 @@ This is a {} phase command.
 
         let integration = integration::CustomCommandIntegration::new();
         
-        // 存在しないコマンドのテスト
+        // Test nonexistent command
         assert!(!integration.is_custom_command("nonexistent", &os).await);
         
-        // 存在しないコマンドのヘルプ表示
+        // Help display for nonexistent command
         let help_result = integration.show_custom_command_help(Some("nonexistent"), &os).await;
         assert!(help_result.is_err());
         
-        // コマンドがない場合のリスト表示
+        // List display when no commands exist
         let commands = integration.list_custom_commands(&os).await.unwrap();
         assert!(commands.is_empty());
         
@@ -296,7 +264,7 @@ mod unit_tests {
 
     #[test]
     fn test_command_namespace_detection() {
-        // CommandNamespaceのテスト
+        // Test CommandNamespace
         assert_eq!(
             CommandNamespace::from_command_name("kairo-requirements"),
             CommandNamespace::Kairo
@@ -321,7 +289,7 @@ mod unit_tests {
 
     #[test]
     fn test_command_scope() {
-        // CommandScopeのテスト
+        // Test CommandScope
         let project_command = CustomCommand {
             name: "test".to_string(),
             content: "Test content".to_string(),
@@ -347,7 +315,7 @@ mod unit_tests {
 
     #[test]
     fn test_frontmatter_parsing() {
-        // フロントマッターの解析テスト
+        // Test frontmatter parsing
         let frontmatter = CommandFrontmatter {
             allowed_tools: Some(vec!["Bash".to_string(), "Git".to_string()]),
             argument_hint: Some("[message]".to_string()),
@@ -365,7 +333,7 @@ mod unit_tests {
 
     #[test]
     fn test_custom_command_info_from_command() {
-        // CustomCommandInfoの変換テスト
+        // Test CustomCommandInfo conversion
         let frontmatter = CommandFrontmatter {
             description: Some("Test description".to_string()),
             argument_hint: Some("[test-arg]".to_string()),

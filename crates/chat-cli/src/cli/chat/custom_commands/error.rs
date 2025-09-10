@@ -1,234 +1,221 @@
-/// カスタムコマンド機能のエラー定義
-
-use thiserror::Error;
 use std::path::PathBuf;
 
-/// カスタムコマンドに関するエラー
+/// Custom command functionality error definitions
+use thiserror::Error;
+
+/// Errors related to custom commands
 #[derive(Error, Debug)]
 pub enum CustomCommandError {
-    /// コマンドが見つからない
+    /// Command not found
     #[error("Custom command '{0}' not found")]
     CommandNotFound(String),
-    
-    /// ファイル読み込みエラー
+
+    /// File read error
     #[error("Failed to read command file '{path}': {source}")]
     FileReadError {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
-    
-    /// ディレクトリアクセスエラー
+
+    /// Directory access error
     #[error("Failed to access directory '{path}': {source}")]
     DirectoryError {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
-    
-    /// マークダウン解析エラー
+
+    /// Markdown parsing error
     #[error("Failed to parse markdown file '{path}': {message}")]
-    MarkdownParseError {
-        path: PathBuf,
-        message: String,
-    },
-    
-    /// フロントマッター解析エラー
+    MarkdownParseError { path: PathBuf, message: String },
+
+    /// Frontmatter parsing error
     #[error("Failed to parse frontmatter in '{path}': {source}")]
     FrontmatterParseError {
         path: PathBuf,
         #[source]
         source: serde_yaml::Error,
     },
-    
-    /// コマンド実行エラー
+
+    /// Command execution error
     #[error("Failed to execute custom command '{command}': {message}")]
-    ExecutionError {
-        command: String,
-        message: String,
-    },
-    
-    /// 引数処理エラー
+    ExecutionError { command: String, message: String },
+
+    /// Argument processing error
     #[error("Invalid arguments for command '{command}': {message}")]
-    ArgumentError {
-        command: String,
-        message: String,
-    },
-    
-    /// ファイル参照エラー
+    ArgumentError { command: String, message: String },
+
+    /// File reference error
     #[error("Failed to resolve file reference '{file}': {source}")]
     FileReferenceError {
         file: String,
         #[source]
         source: std::io::Error,
     },
-    
-    /// Bashコマンド実行エラー
+
+    /// Bash command execution error
     #[error("Failed to execute bash command: {message}")]
-    BashExecutionError {
-        message: String,
-    },
-    
-    /// セキュリティエラー
+    BashExecutionError { message: String },
+
+    /// Security error
     #[error("Security violation in command '{command}': {message}")]
-    SecurityError {
-        command: String,
-        message: String,
-    },
-    
-    /// 依存関係エラー
+    SecurityError { command: String, message: String },
+
+    /// Dependency error
     #[error("Dependency error for command '{command}': missing '{dependency}'")]
-    DependencyError {
-        command: String,
-        dependency: String,
-    },
-    
-    /// 設定エラー
+    DependencyError { command: String, dependency: String },
+
+    /// Configuration error
     #[error("Configuration error: {message}")]
-    ConfigError {
-        message: String,
-    },
-    
-    /// タイムアウトエラー
+    ConfigError { message: String },
+
+    /// Timeout error
     #[error("Command '{command}' timed out after {timeout_ms}ms")]
-    TimeoutError {
-        command: String,
-        timeout_ms: u64,
-    },
-    
-    /// 一般的なI/Oエラー
+    TimeoutError { command: String, timeout_ms: u64 },
+
+    /// General I/O error
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
-    
-    /// JSON解析エラー
+
+    /// JSON parsing error
     #[error("JSON parse error: {0}")]
     JsonError(#[from] serde_json::Error),
-    
-    /// YAML解析エラー
+
+    /// YAML parsing error
     #[error("YAML parse error: {0}")]
     YamlError(#[from] serde_yaml::Error),
-    
-    /// その他のエラー
+
+    /// Other errors
     #[error("Unknown error: {0}")]
     Other(String),
 }
 
 impl CustomCommandError {
-    /// ファイル読み込みエラーを作成
+    /// Create file read error
     pub fn file_read_error(path: PathBuf, source: std::io::Error) -> Self {
         Self::FileReadError { path, source }
     }
-    
-    /// ディレクトリエラーを作成
+
+    /// Create directory error
     pub fn directory_error(path: PathBuf, source: std::io::Error) -> Self {
         Self::DirectoryError { path, source }
     }
-    
-    /// マークダウン解析エラーを作成
+
+    /// Create markdown parsing error
     pub fn markdown_parse_error(path: PathBuf, message: impl Into<String>) -> Self {
         Self::MarkdownParseError {
             path,
             message: message.into(),
         }
     }
-    
-    /// フロントマッター解析エラーを作成
+
+    /// Create frontmatter parsing error
     pub fn frontmatter_parse_error(path: PathBuf, source: serde_yaml::Error) -> Self {
         Self::FrontmatterParseError { path, source }
     }
-    
-    /// コマンド実行エラーを作成
+
+    /// Create command execution error
     pub fn execution_error(command: impl Into<String>, message: impl Into<String>) -> Self {
         Self::ExecutionError {
             command: command.into(),
             message: message.into(),
         }
     }
-    
-    /// 引数エラーを作成
+
+    /// Create argument error
     pub fn argument_error(command: impl Into<String>, message: impl Into<String>) -> Self {
         Self::ArgumentError {
             command: command.into(),
             message: message.into(),
         }
     }
-    
-    /// ファイル参照エラーを作成
+
+    /// Create file reference error
     pub fn file_reference_error(file: impl Into<String>, source: std::io::Error) -> Self {
         Self::FileReferenceError {
             file: file.into(),
             source,
         }
     }
-    
-    /// Bash実行エラーを作成
+
+    /// Create bash execution error
     pub fn bash_execution_error(message: impl Into<String>) -> Self {
         Self::BashExecutionError {
             message: message.into(),
         }
     }
-    
-    /// セキュリティエラーを作成
+
+    /// Create security error
     pub fn security_error(command: impl Into<String>, message: impl Into<String>) -> Self {
         Self::SecurityError {
             command: command.into(),
             message: message.into(),
         }
     }
-    
-    /// 依存関係エラーを作成
+
+    /// Create dependency error
     pub fn dependency_error(command: impl Into<String>, dependency: impl Into<String>) -> Self {
         Self::DependencyError {
             command: command.into(),
             dependency: dependency.into(),
         }
     }
-    
-    /// 設定エラーを作成
+
+    /// Create configuration error
     pub fn config_error(message: impl Into<String>) -> Self {
         Self::ConfigError {
             message: message.into(),
         }
     }
-    
-    /// タイムアウトエラーを作成
+
+    /// Create timeout error
     pub fn timeout_error(command: impl Into<String>, timeout_ms: u64) -> Self {
         Self::TimeoutError {
             command: command.into(),
             timeout_ms,
         }
     }
-    
-    /// エラーが致命的かどうかを判定
+
+    /// Determine if error is fatal
     pub fn is_fatal(&self) -> bool {
         match self {
-            Self::CommandNotFound(_) => false, // コマンドが見つからないのは致命的ではない
-            Self::ArgumentError { .. } => false, // 引数エラーは修正可能
-            Self::SecurityError { .. } => true, // セキュリティエラーは致命的
-            Self::ConfigError { .. } => true, // 設定エラーは致命的
+            Self::CommandNotFound(_) => false,   // Command not found is not fatal
+            Self::ArgumentError { .. } => false, // Argument errors are fixable
+            Self::SecurityError { .. } => true,  // Security errors are fatal
+            Self::ConfigError { .. } => true,    // Configuration errors are fatal
             _ => false,
         }
     }
-    
-    /// ユーザー向けのメッセージを取得
+
+    /// Get user-facing message
     pub fn user_message(&self) -> String {
         match self {
             Self::CommandNotFound(cmd) => {
-                format!("コマンド '{}' が見つかりません。利用可能なコマンドを確認するには '/help' を実行してください。", cmd)
+                format!(
+                    "Command '{}' not found. Run '/help' to see available commands.",
+                    cmd
+                )
             },
             Self::ArgumentError { command, message } => {
-                format!("コマンド '{}' の引数が正しくありません: {}", command, message)
+                format!("Invalid arguments for command '{}': {}", command, message)
             },
             Self::FileReferenceError { file, .. } => {
-                format!("ファイル '{}' を読み込めませんでした。ファイルパスを確認してください。", file)
+                format!(
+                    "Failed to read file '{}'. Please check the file path.",
+                    file
+                )
             },
             Self::SecurityError { command, message } => {
-                format!("セキュリティ上の理由により、コマンド '{}' を実行できません: {}", command, message)
+                format!(
+                    "Cannot execute command '{}' for security reasons: {}",
+                    command, message
+                )
             },
             _ => self.to_string(),
         }
     }
 }
 
-/// 結果型のエイリアス
+/// Result type alias
 pub type Result<T> = std::result::Result<T, CustomCommandError>;

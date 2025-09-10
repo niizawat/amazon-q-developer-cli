@@ -1,40 +1,41 @@
-/// カスタムコマンドの実行エンジン
-/// 
-/// カスタムコマンドを実行し、以下の機能を提供します：
-/// - 引数置換（$ARGUMENTS）
-/// - ファイル参照（@filename）
-/// - Bashコマンド実行（!`command`）
-/// - セキュリティ検証
-
+//! Custom command execution engine
+//!
+//! Executes custom commands and provides the following features:
+//! - Argument substitution ($ARGUMENTS)
+//! - File references (@filename)
+//! - Bash command execution (!`command`)
+//! - Security validation
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
+
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use crate::cli::chat::custom_commands::{
-    CustomCommand,
-    parser::{PromptProcessor, SecurityValidationConfig},
-    error::CustomCommandError,
+use crate::cli::chat::custom_commands::CustomCommand;
+use crate::cli::chat::custom_commands::error::CustomCommandError;
+use crate::cli::chat::custom_commands::parser::{
+    PromptProcessor,
+    SecurityValidationConfig,
 };
 use crate::os::Os;
 
-/// コマンド実行エンジン
+/// Command execution engine
 pub struct CustomCommandExecutor {
-    /// Bashコマンドのタイムアウト（デフォルト30秒）
+    /// Bash command timeout (default 30 seconds)
     bash_timeout: Duration,
-    /// セキュリティモード
+    /// Security mode
     security_mode: SecurityMode,
 }
 
-/// セキュリティモード
+/// Security mode
 #[derive(Debug, Clone)]
 pub enum SecurityMode {
-    /// 厳格モード - 危険なコマンドを拒否
+    /// Strict mode - reject dangerous commands
     Strict,
-    /// 警告モード - 警告を表示するが実行は許可
+    /// Warning mode - show warnings but allow execution
     Warning,
-    /// 許可モード - すべて許可
+    /// Permissive mode - allow all
     Permissive,
 }
 
@@ -45,39 +46,39 @@ impl Default for CustomCommandExecutor {
 }
 
 impl CustomCommandExecutor {
-    /// 新しい実行エンジンを作成
+    /// Create a new execution engine
     pub fn new() -> Self {
         Self {
             bash_timeout: Duration::from_secs(30),
             security_mode: SecurityMode::Strict,
         }
     }
-    
-    /// タイムアウトを設定
+
+    /// Set timeout
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.bash_timeout = timeout;
         self
     }
-    
-    /// セキュリティモードを設定
+
+    /// Set security mode
     pub fn with_security_mode(mut self, mode: SecurityMode) -> Self {
         self.security_mode = mode;
         self
     }
-    
-    /// カスタムコマンドを実行（デフォルト設定）
+
+    /// Execute custom command (default configuration)
     pub async fn execute(
         &self,
         command: &CustomCommand,
         args: &[String],
         os: &Os,
     ) -> Result<String, CustomCommandError> {
-        // デフォルト設定でセキュリティ検証付き実行を呼び出す
+        // Call security validation execution with default configuration
         let default_config = SecurityValidationConfig::default();
         self.execute_with_security(command, args, os, &default_config).await
     }
-    
-    /// セキュリティ設定付きでカスタムコマンドを実行
+
+    /// Execute custom command with security configuration
     pub async fn execute_with_security(
         &self,
         command: &CustomCommand,
@@ -85,208 +86,240 @@ impl CustomCommandExecutor {
         os: &Os,
         security_config: &SecurityValidationConfig,
     ) -> Result<String, CustomCommandError> {
-        tracing::info!("Executing custom command: {} with security level: {:?}", command.name, security_config.level);
-        
-        // 1. セキュリティチェック（設定付き）
-        self.security_check_with_config(command, security_config)?;
-        
-        // 2. 引数置換
+        tracing::info!(
+            "Executing custom command: {} with security level: {:?}",
+            command.name,
+            security_config.level
+        );
+
+        // 1. Security check (with configuration)
+        Self::security_check_with_config(command, security_config)?;
+
+        // 2. Argument substitution
         let mut processed_content = PromptProcessor::substitute_arguments(&command.content, args);
-        
-        // 3. Bashコマンド実行（!`command`パターン）
-        processed_content = self.execute_bash_commands(&processed_content, os).await?;
-        
-        // 4. ファイル参照解決（@filenameパターン）
+
+        // 3. Bash command execution (!`command` pattern) - use frontmatter permissions
+        #[allow(clippy::map_unwrap_or)]
+        let allowed_tools = command
+            .frontmatter
+            .as_ref()
+            .and_then(|fm| fm.allowed_tools.as_ref())
+            .map(|tools| tools.as_slice())
+            .unwrap_or(&[]);
+        processed_content = self
+            .execute_bash_commands_with_permissions(&processed_content, os, allowed_tools)
+            .await?;
+
+        // 4. File reference resolution (@filename pattern)
         processed_content = self.resolve_file_references(&processed_content, os).await?;
-        
+
+        // 5. Extended thinking mode detection
+        if PromptProcessor::detect_thinking_keywords(&processed_content) {
+            tracing::info!("Extended thinking keywords detected in custom command");
+            // Add prefix indicating thinking mode
+            processed_content = format!("🤔 **Extended Thinking Mode Activated**\n\n{}", processed_content);
+        }
+
         tracing::debug!("Processed content length: {}", processed_content.len());
         Ok(processed_content)
     }
-    
-    /// セキュリティチェック
+
+    /// Security check
     fn security_check(&self, command: &CustomCommand) -> Result<(), CustomCommandError> {
         match self.security_mode {
-            SecurityMode::Permissive => return Ok(()), // すべて許可
+            SecurityMode::Permissive => Ok(()), // Allow all commands
             SecurityMode::Warning | SecurityMode::Strict => {
                 let risks = PromptProcessor::check_security_risks(&command.content);
-                if !risks.is_empty() {
-                    match self.security_mode {
-                        SecurityMode::Warning => {
-                            tracing::warn!("Security risks detected in command '{}': {:?}", command.name, risks);
-                        },
-                        SecurityMode::Strict => {
-                            return Err(CustomCommandError::security_error(
-                                &command.name,
-                                format!("Security risks detected: {}", risks.join(", ")),
-                            ));
-                        },
-                        _ => unreachable!(),
-                    }
+                if risks.is_empty() {
+                    return Ok(());
+                }
+
+                match self.security_mode {
+                    SecurityMode::Warning => {
+                        tracing::warn!("Security risks detected in command '{}': {:?}", command.name, risks);
+                        Ok(())
+                    },
+                    SecurityMode::Strict => {
+                        Err(CustomCommandError::security_error(
+                            &command.name,
+                            format!("Security risks detected: {}", risks.join(", ")),
+                        ))
+                    },
+                    SecurityMode::Permissive => unreachable!("Already handled above"),
                 }
             },
         }
-        Ok(())
-    }
-    
-    /// セキュリティ設定に基づくコマンドのセキュリティチェック
-    fn security_check_with_config(&self, command: &CustomCommand, config: &SecurityValidationConfig) -> Result<(), CustomCommandError> {
+
+    /// Security check for command based on configuration
+    fn security_check_with_config(
+        command: &CustomCommand,
+        config: &SecurityValidationConfig,
+    ) -> Result<(), CustomCommandError> {
         PromptProcessor::validate_content_with_config(&command.content, config)
     }
-    
-    /// Bashコマンドを実行
-    async fn execute_bash_commands(
+
+    /// Execute bash commands with permissions
+    async fn execute_bash_commands_with_permissions(
         &self,
         content: &str,
         os: &Os,
+        allowed_tools: &[String],
     ) -> Result<String, CustomCommandError> {
         let bash_commands = PromptProcessor::extract_bash_commands(content);
         if bash_commands.is_empty() {
             return Ok(content.to_string());
         }
-        
+
         let mut result = content.to_string();
-        
+
         for bash_cmd in bash_commands {
             tracing::debug!("Executing bash command: {}", bash_cmd);
-            
+
+            // Claude Code format permission check
+            if !allowed_tools.is_empty() && !PromptProcessor::validate_bash_permissions(&bash_cmd, allowed_tools) {
+                return Err(CustomCommandError::bash_execution_error(format!(
+                    "Bash command '{}' not permitted by allowed-tools",
+                    bash_cmd
+                )));
+            }
+
             let output = self.run_bash_command(&bash_cmd, os).await?;
-            
-            // !`command` パターンを結果で置換
+
+            // Replace !`command` pattern with result
             let pattern = format!("!`{}`", bash_cmd);
             result = result.replace(&pattern, &output);
         }
-        
+
         Ok(result)
     }
-    
-    /// 単一のBashコマンドを実行
+
+    /// Execute a single bash command
     async fn run_bash_command(&self, cmd: &str, _os: &Os) -> Result<String, CustomCommandError> {
-        // セキュリティチェック
+        // Security check
         let risks = PromptProcessor::check_security_risks(cmd);
         if !risks.is_empty() && matches!(self.security_mode, SecurityMode::Strict) {
-            return Err(CustomCommandError::bash_execution_error(
-                format!("Dangerous command rejected: {}", cmd),
-            ));
+            return Err(CustomCommandError::bash_execution_error(format!(
+                "Dangerous command rejected: {}",
+                cmd
+            )));
         }
-        
-        // Bashコマンドを実行
+
+        // Bash command execution (permission check already performed by caller)
         #[cfg(unix)]
         let mut command = Command::new("bash");
         #[cfg(windows)]
         let mut command = Command::new("cmd");
-        
+
         #[cfg(unix)]
         command.arg("-c").arg(cmd);
         #[cfg(windows)]
         command.arg("/C").arg(cmd);
-        
+
         command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
-        
-        // タイムアウト付きで実行
-        let child = command.spawn()
-            .map_err(|e| CustomCommandError::bash_execution_error(
-                format!("Failed to spawn command '{}': {}", cmd, e),
-            ))?;
-        
+
+        // Execute with timeout
+        let child = command.spawn().map_err(|e| {
+            CustomCommandError::bash_execution_error(format!("Failed to spawn command '{}': {}", cmd, e))
+        })?;
+
         let output = timeout(self.bash_timeout, child.wait_with_output())
             .await
-            .map_err(|_| CustomCommandError::timeout_error(cmd, self.bash_timeout.as_millis() as u64))?
-            .map_err(|e| CustomCommandError::bash_execution_error(
-                format!("Command execution failed '{}': {}", cmd, e),
-            ))?;
-        
+            .map_err(|_timeout_err| CustomCommandError::timeout_error(cmd, self.bash_timeout.as_millis() as u64))?
+            .map_err(|e| {
+                CustomCommandError::bash_execution_error(format!("Command execution failed '{}': {}", cmd, e))
+            })?;
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(CustomCommandError::bash_execution_error(
-                format!("Command failed '{}': {}", cmd, stderr),
-            ));
+            return Err(CustomCommandError::bash_execution_error(format!(
+                "Command failed '{}': {}",
+                cmd, stderr
+            )));
         }
-        
+
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(stdout.trim().to_string())
     }
-    
-    /// ファイル参照を解決
-    async fn resolve_file_references(
-        &self,
-        content: &str,
-        os: &Os,
-    ) -> Result<String, CustomCommandError> {
+
+    /// Resolve file references
+    async fn resolve_file_references(&self, content: &str, os: &Os) -> Result<String, CustomCommandError> {
         let file_refs = PromptProcessor::extract_file_references(content);
         if file_refs.is_empty() {
             return Ok(content.to_string());
         }
-        
+
         let mut result = content.to_string();
-        let current_dir = os.env.current_dir()
+        let current_dir = os
+            .env
+            .current_dir()
             .map_err(|e| CustomCommandError::config_error(format!("Failed to get current directory: {}", e)))?;
-        
+
         for file_ref in file_refs {
             tracing::debug!("Resolving file reference: {}", file_ref);
-            
+
             let file_content = self.read_file_reference(&file_ref, &current_dir).await?;
-            
-            // @filename パターンを内容で置換
+
+            // Replace @filename pattern with content
             let pattern = format!("@{}", file_ref);
             let replacement = format!("```\n{}\n```", file_content);
             result = result.replace(&pattern, &replacement);
         }
-        
+
         Ok(result)
     }
-    
-    /// ファイル参照を読み込み
-    async fn read_file_reference(
-        &self,
-        file_ref: &str,
-        current_dir: &Path,
-    ) -> Result<String, CustomCommandError> {
-        // セキュリティチェック: 相対パスの外側へのアクセスを防ぐ
+
+    /// Read file reference
+    async fn read_file_reference(&self, file_ref: &str, current_dir: &Path) -> Result<String, CustomCommandError> {
+        // Security check: prevent access outside relative paths
         if file_ref.contains("..") || file_ref.starts_with('/') {
             return Err(CustomCommandError::security_error(
                 "file_reference",
                 format!("Unsafe file reference: {}", file_ref),
             ));
         }
-        
+
         let file_path = current_dir.join(file_ref);
-        
-        // ファイルの存在チェック
+
+        // Check file existence
         if !file_path.exists() {
             return Err(CustomCommandError::file_reference_error(
                 file_ref.to_string(),
                 std::io::Error::new(std::io::ErrorKind::NotFound, "File not found"),
             ));
         }
-        
-        // ファイルサイズチェック（大きすぎるファイルを防ぐ）
+
+        // File size check (prevent files that are too large)
         let metadata = tokio::fs::metadata(&file_path)
             .await
             .map_err(|e| CustomCommandError::file_reference_error(file_ref.to_string(), e))?;
-        
+
         const MAX_FILE_SIZE: u64 = 1024 * 1024; // 1MB
         if metadata.len() > MAX_FILE_SIZE {
             return Err(CustomCommandError::file_reference_error(
                 file_ref.to_string(),
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!("File too large: {} bytes (max: {} bytes)", metadata.len(), MAX_FILE_SIZE),
+                    format!(
+                        "File too large: {} bytes (max: {} bytes)",
+                        metadata.len(),
+                        MAX_FILE_SIZE
+                    ),
                 ),
             ));
         }
-        
-        // ファイル内容を読み込み
+
+        // Read file content
         let content = tokio::fs::read_to_string(&file_path)
             .await
             .map_err(|e| CustomCommandError::file_reference_error(file_ref.to_string(), e))?;
-        
+
         Ok(content)
     }
-    
-    /// プレビューモードでの実行（実際には実行せず、処理内容を表示）
+
+    /// Execute in preview mode (display processing content without actual execution)
     pub async fn preview(
         &self,
         command: &CustomCommand,
@@ -299,31 +332,31 @@ impl CustomCommandExecutor {
             bash_commands: PromptProcessor::extract_bash_commands(&command.content),
             file_references: PromptProcessor::extract_file_references(&command.content),
             security_risks: PromptProcessor::check_security_risks(&command.content),
-            estimated_execution_time: self.estimate_execution_time(command),
+            estimated_execution_time: Self::estimate_execution_time(command),
         };
-        
-        // セキュリティチェック結果を追加
+
+        // Add security check results
         if let Err(e) = self.security_check(command) {
             preview.security_risks.push(e.to_string());
         }
-        
+
         Ok(preview)
     }
-    
-    /// 実行時間を推定
-    fn estimate_execution_time(&self, command: &CustomCommand) -> Duration {
+
+    /// Estimate execution time
+    fn estimate_execution_time(command: &CustomCommand) -> Duration {
         let bash_commands = PromptProcessor::extract_bash_commands(&command.content);
         let file_refs = PromptProcessor::extract_file_references(&command.content);
-        
-        let base_time = Duration::from_millis(100); // 基本処理時間
-        let bash_time = Duration::from_millis(500 * bash_commands.len() as u64); // Bashコマンド1つあたり500ms
-        let file_time = Duration::from_millis(50 * file_refs.len() as u64); // ファイル参照1つあたり50ms
-        
+
+        let base_time = Duration::from_millis(100); // Base processing time
+        let bash_time = Duration::from_millis(500 * bash_commands.len() as u64); // 500ms per bash command
+        let file_time = Duration::from_millis(50 * file_refs.len() as u64); // 50ms per file reference
+
         base_time + bash_time + file_time
     }
 }
 
-/// 実行プレビュー結果
+/// Execution preview result
 #[derive(Debug, Clone)]
 pub struct ExecutionPreview {
     pub command_name: String,
@@ -335,48 +368,53 @@ pub struct ExecutionPreview {
 }
 
 impl ExecutionPreview {
-    /// プレビューを表示用文字列に変換
+    /// Convert preview to display string
     pub fn to_display_string(&self) -> String {
         let mut output = Vec::new();
-        
+
         output.push(format!("📋 Command: {}", self.command_name));
         output.push(format!("⏱️  Estimated time: {:?}", self.estimated_execution_time));
-        
+
         if !self.bash_commands.is_empty() {
             output.push("🔧 Bash commands to execute:".to_string());
             for cmd in &self.bash_commands {
                 output.push(format!("  - {}", cmd));
             }
         }
-        
+
         if !self.file_references.is_empty() {
             output.push("📁 Files to reference:".to_string());
             for file_ref in &self.file_references {
                 output.push(format!("  - {}", file_ref));
             }
         }
-        
+
         if !self.security_risks.is_empty() {
             output.push("⚠️  Security warnings:".to_string());
             for risk in &self.security_risks {
                 output.push(format!("  - {}", risk));
             }
         }
-        
+
         output.push("".to_string());
         output.push("📄 Processed content:".to_string());
         output.push(self.processed_content.clone());
-        
+
         output.join("\n")
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::cli::chat::custom_commands::{CommandScope, CommandFrontmatter};
     use std::path::PathBuf;
+
     use tempfile::tempdir;
+
+    use super::*;
+    use crate::cli::chat::custom_commands::{
+        CommandFrontmatter,
+        CommandScope,
+    };
 
     #[tokio::test]
     #[ignore = "Requires complex Os setup"]
@@ -389,11 +427,6 @@ mod tests {
             file_path: PathBuf::from("test.md"),
             namespace: None,
         };
-        
-        // テストは一時的に無効化（Osの初期化が複雑なため）
-        // let executor = CustomCommandExecutor::new().with_security_mode(SecurityMode::Permissive);
-        // let result = executor.execute(&command, &["123".to_string()], &os).await.unwrap();
-        // assert_eq!(result, "Process issue #123");
     }
 
     #[tokio::test]
@@ -402,7 +435,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let test_file = temp_dir.path().join("test.txt");
         tokio::fs::write(&test_file, "Test content").await.unwrap();
-        
+
         let command = CustomCommand {
             name: "test".to_string(),
             content: "Review @test.txt file".to_string(),
@@ -411,11 +444,6 @@ mod tests {
             file_path: PathBuf::from("test.md"),
             namespace: None,
         };
-        
-        // テストは一時的に無効化（Osの初期化が複雑なため）
-        // let executor = CustomCommandExecutor::new().with_security_mode(SecurityMode::Permissive);
-        // let result = executor.execute(&command, &[], &os).await.unwrap();
-        // assert!(result.contains("Test content"));
     }
 
     #[test]
@@ -428,10 +456,10 @@ mod tests {
             file_path: PathBuf::from("dangerous.md"),
             namespace: None,
         };
-        
+
         let strict_executor = CustomCommandExecutor::new().with_security_mode(SecurityMode::Strict);
         assert!(strict_executor.security_check(&command).is_err());
-        
+
         let permissive_executor = CustomCommandExecutor::new().with_security_mode(SecurityMode::Permissive);
         assert!(permissive_executor.security_check(&command).is_ok());
     }

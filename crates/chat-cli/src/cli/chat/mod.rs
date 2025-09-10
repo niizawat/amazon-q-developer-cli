@@ -1924,31 +1924,39 @@ impl ChatSession {
                     let command_name = orig_args.first().unwrap_or(&String::new()).clone();
                     if !command_name.is_empty() {
                         // Check if it's a custom command first
-                        let is_custom = self.custom_command_integration.is_custom_command(&command_name, os).await;
+                        let is_custom = self
+                            .custom_command_integration
+                            .is_custom_command(&command_name, os)
+                            .await;
                         if is_custom {
                             // Execute as custom command
-                            let custom_args = if orig_args.len() > 1 {
-                                &orig_args[1..]
-                            } else {
-                                &[]
-                            };
-                            
-                            match self.custom_command_integration.execute_custom_command(&command_name, custom_args, os).await {
+                            let custom_args = if orig_args.len() > 1 { &orig_args[1..] } else { &[] };
+
+                            match self
+                                .custom_command_integration
+                                .execute_custom_command(&command_name, custom_args, os)
+                                .await
+                            {
                                 Ok(result) => return Ok(ChatState::HandleInput { input: result }),
                                 Err(custom_err) => {
                                     queue!(
                                         self.stderr,
                                         style::SetForegroundColor(Color::Red),
-                                        style::Print(format!("\nFailed to execute custom command '{}': {}\n", command_name, custom_err)),
+                                        style::Print(format!(
+                                            "\nFailed to execute custom command '{}': {}\n",
+                                            command_name, custom_err
+                                        )),
                                         style::SetForegroundColor(Color::Reset)
                                     )?;
                                     writeln!(self.stderr)?;
-                                    return Ok(ChatState::PromptUser { skip_printing_tools: true });
-                                }
+                                    return Ok(ChatState::PromptUser {
+                                        skip_printing_tools: true,
+                                    });
+                                },
                             }
                         }
                     }
-                    
+
                     // Replace the dummy name with a slash. Also have to check for an ansi sequence
                     // for invalid slash commands (e.g. on a "/doesntexist" input).
                     let ansi_output = err
