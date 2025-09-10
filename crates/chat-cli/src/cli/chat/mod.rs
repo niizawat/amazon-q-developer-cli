@@ -45,6 +45,7 @@ use cli::compact::CompactStrategy;
 use cli::model::{
     get_available_models,
     select_model,
+    find_model,
 };
 pub use conversation::ConversationState;
 use conversation::TokenWarningLevel;
@@ -142,7 +143,6 @@ use crate::cli::TodoListState;
 use crate::cli::agent::Agents;
 use crate::cli::chat::cli::SlashCommand;
 use crate::cli::chat::cli::editor::open_editor;
-use crate::cli::chat::cli::model::find_model;
 use crate::cli::chat::cli::prompts::{
     GetPromptError,
     PromptsSubcommand,
@@ -341,7 +341,17 @@ impl ChatArgs {
         // If modelId is specified, verify it exists before starting the chat
         // Otherwise, CLI will use a default model when starting chat
         let (models, default_model_opt) = get_available_models(os).await?;
+        // Fallback logic: try user's saved default, then system default
+        let fallback_model_id = || {
+            if let Some(saved) = os.database.settings.get_string(Setting::ChatDefaultModel) {
+                find_model(&models, &saved).map(|m| m.model_id.clone()).or(Some(default_model_opt.model_id.clone()))
+            } else {
+                Some(default_model_opt.model_id.clone())
+            }
+        };
+
         let model_id: Option<String> = if let Some(requested) = self.model.as_ref() {
+            // CLI argument takes highest priority
             if let Some(m) = find_model(&models, requested) {
                 Some(m.model_id.clone())
             } else {
@@ -352,12 +362,26 @@ impl ChatArgs {
                     .join(", ");
                 bail!("Model '{}' does not exist. Available models: {}", requested, available);
             }
-        } else if let Some(saved) = os.database.settings.get_string(Setting::ChatDefaultModel) {
-            find_model(&models, &saved)
-                .map(|m| m.model_id.clone())
-                .or(Some(default_model_opt.model_id.clone()))
+        } else if let Some(agent_model) = agents.get_active().and_then(|a| a.model.as_ref()) {
+            // Agent model takes second priority
+            if let Some(m) = find_model(&models, agent_model) {
+                Some(m.model_id.clone())
+            } else {
+                let _ = execute!(
+                    stderr,
+                    style::SetForegroundColor(Color::Yellow),
+                    style::Print("WARNING: "),
+                    style::SetForegroundColor(Color::Reset),
+                    style::Print("Agent specifies model '"),
+                    style::SetForegroundColor(Color::Cyan),
+                    style::Print(agent_model),
+                    style::SetForegroundColor(Color::Reset),
+                    style::Print("' which is not available. Falling back to configured defaults.\n"),
+                );
+                fallback_model_id()
+            }
         } else {
-            Some(default_model_opt.model_id.clone())
+            fallback_model_id()
         };
 
         let (prompt_request_sender, prompt_request_receiver) = tokio::sync::broadcast::channel::<PromptQuery>(5);
