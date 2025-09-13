@@ -40,12 +40,13 @@ use clap::{
     Args,
     CommandFactory,
     Parser,
+    ValueEnum,
 };
 use cli::compact::CompactStrategy;
 use cli::model::{
+    find_model,
     get_available_models,
     select_model,
-    find_model,
 };
 pub use conversation::ConversationState;
 use conversation::TokenWarningLevel;
@@ -167,6 +168,7 @@ use crate::telemetry::{
 use crate::util::{
     MCP_SERVER_TOOL_DELIMITER,
     directories,
+    ui,
 };
 
 const LIMIT_REACHED_TEXT: &str = color_print::cstr! { "You've used all your free requests for this month. You have two options:
@@ -189,6 +191,16 @@ pub const EXTRA_HELP: &str = color_print::cstr! {"
 <em>chat.editMode</em>       <black!>The prompt editing mode (vim or emacs)</black!>
                     <black!>Change using: q settings chat.skimCommandKey x</black!>
 "};
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum WrapMode {
+    /// Always wrap at terminal width
+    Always,
+    /// Never wrap (raw output)
+    Never,
+    /// Auto-detect based on output target (default)
+    Auto,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Args)]
 pub struct ChatArgs {
@@ -213,6 +225,9 @@ pub struct ChatArgs {
     pub no_interactive: bool,
     /// The first question to ask
     pub input: Option<String>,
+    /// Control line wrapping behavior (default: auto-detect)
+    #[arg(short = 'w', long, value_enum)]
+    pub wrap: Option<WrapMode>,
 }
 
 impl ChatArgs {
@@ -344,7 +359,9 @@ impl ChatArgs {
         // Fallback logic: try user's saved default, then system default
         let fallback_model_id = || {
             if let Some(saved) = os.database.settings.get_string(Setting::ChatDefaultModel) {
-                find_model(&models, &saved).map(|m| m.model_id.clone()).or(Some(default_model_opt.model_id.clone()))
+                find_model(&models, &saved)
+                    .map(|m| m.model_id.clone())
+                    .or(Some(default_model_opt.model_id.clone()))
             } else {
                 Some(default_model_opt.model_id.clone())
             }
@@ -413,6 +430,7 @@ impl ChatArgs {
             tool_config,
             !self.no_interactive,
             mcp_enabled,
+            self.wrap,
         )
         .await?
         .spawn(os)
@@ -433,8 +451,11 @@ const WELCOME_TEXT: &str = color_print::cstr! {"<cyan!>
 const SMALL_SCREEN_WELCOME_TEXT: &str = color_print::cstr! {"<em>Welcome to <cyan!>Amazon Q</cyan!>!</em>"};
 const RESUME_TEXT: &str = color_print::cstr! {"<em>Picking up where we left off...</em>"};
 
+// Maximum number of times to show the changelog announcement per version
+const CHANGELOG_MAX_SHOW_COUNT: i64 = 2;
+
 // Only show the model-related tip for now to make users aware of this feature.
-const ROTATING_TIPS: [&str; 18] = [
+const ROTATING_TIPS: [&str; 19] = [
     color_print::cstr! {"You can resume the last conversation from your current directory by launching with
     <green!>q chat --resume</green!>"},
     color_print::cstr! {"Get notified whenever Q CLI finishes responding.
@@ -468,6 +489,7 @@ const ROTATING_TIPS: [&str; 18] = [
     color_print::cstr! {"Run <green!>/prompts</green!> to learn how to build & run repeatable workflows"},
     color_print::cstr! {"Use <green!>/tangent</green!> or <green!>ctrl + t</green!> (customizable) to start isolated conversations ( ↯ ) that don't affect your main chat history"},
     color_print::cstr! {"Ask me directly about my capabilities! Try questions like <green!>\"What can you do?\"</green!> or <green!>\"Can you save conversations?\"</green!>"},
+    color_print::cstr! {"Stay up to date with the latest features and improvements! Use <green!>/changelog</green!> to see what's new in Amazon Q CLI"},
 ];
 
 const GREETING_BREAK_POINT: usize = 80;
@@ -624,6 +646,7 @@ pub struct ChatSession {
     ctrlc_rx: broadcast::Receiver<()>,
     /// Custom slash commands integration
     custom_command_integration: custom_commands::integration::CustomCommandIntegration,
+    wrap: Option<WrapMode>,
 }
 
 impl ChatSession {
@@ -643,6 +666,7 @@ impl ChatSession {
         tool_config: HashMap<String, ToolSpec>,
         interactive: bool,
         mcp_enabled: bool,
+        wrap: Option<WrapMode>,
     ) -> Result<Self> {
         // Reload prior conversation
         let mut existing_conversation = false;
@@ -735,6 +759,7 @@ impl ChatSession {
             inner: Some(ChatState::default()),
             ctrlc_rx,
             custom_command_integration: custom_commands::integration::CustomCommandIntegration::new(),
+            wrap,
         })
     }
 
@@ -1093,6 +1118,34 @@ impl ChatSession {
 
         Ok(())
     }
+
+    async fn show_changelog_announcement(&mut self, os: &mut Os) -> Result<()> {
+        let current_version = env!("CARGO_PKG_VERSION");
+        let last_version = os.database.get_changelog_last_version()?;
+        let show_count = os.database.get_changelog_show_count()?.unwrap_or(0);
+
+        // Check if version changed or if we haven't shown it max times yet
+        let should_show = match &last_version {
+            Some(last) if last == current_version => show_count < CHANGELOG_MAX_SHOW_COUNT,
+            _ => true, // New version or no previous version
+        };
+
+        if should_show {
+            // Use the shared rendering function
+            ui::render_changelog_content(&mut self.stderr)?;
+
+            // Update the database entries
+            os.database.set_changelog_last_version(current_version)?;
+            let new_count = if last_version.as_deref() == Some(current_version) {
+                show_count + 1
+            } else {
+                1
+            };
+            os.database.set_changelog_show_count(new_count)?;
+        }
+
+        Ok(())
+    }
 }
 
 impl Drop for ChatSession {
@@ -1238,6 +1291,9 @@ impl ChatSession {
             )?;
             execute!(self.stderr, style::Print("\n"), style::SetForegroundColor(Color::Reset))?;
         }
+
+        // Check if we should show the whats-new announcement
+        self.show_changelog_announcement(os).await?;
 
         if self.all_tools_trusted() {
             queue!(
@@ -2460,8 +2516,20 @@ impl ChatSession {
         let mut buf = String::new();
         let mut offset = 0;
         let mut ended = false;
+        let terminal_width = match self.wrap {
+            Some(WrapMode::Never) => None,
+            Some(WrapMode::Always) => Some(self.terminal_width()),
+            Some(WrapMode::Auto) | None => {
+                if std::io::stdout().is_terminal() {
+                    Some(self.terminal_width())
+                } else {
+                    None
+                }
+            },
+        };
+
         let mut state = ParseState::new(
-            Some(self.terminal_width()),
+            terminal_width,
             os.database.settings.get_bool(Setting::ChatDisableMarkdownRendering),
         );
         let mut response_prefix_printed = false;
@@ -3381,6 +3449,7 @@ mod tests {
             tool_config,
             true,
             false,
+            None,
         )
         .await
         .unwrap()
@@ -3523,6 +3592,7 @@ mod tests {
             tool_config,
             true,
             false,
+            None,
         )
         .await
         .unwrap()
@@ -3620,6 +3690,7 @@ mod tests {
             tool_config,
             true,
             false,
+            None,
         )
         .await
         .unwrap()
@@ -3695,6 +3766,7 @@ mod tests {
             tool_config,
             true,
             false,
+            None,
         )
         .await
         .unwrap()
@@ -3746,6 +3818,7 @@ mod tests {
             tool_config,
             true,
             false,
+            None,
         )
         .await
         .unwrap()
